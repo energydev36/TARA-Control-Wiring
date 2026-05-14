@@ -37,15 +37,13 @@ function cleanWirePoints(pts: number[]): number[] {
   return out;
 }
 
-/** Recalculate endpoints of all wires bound to a moved/resized device.
- *  Maintains orthogonality of the first/last segment by inspecting the neighbour segment. */
-function recalcBoundWires(
+function recalcBoundWiresCore(
   deviceId: string,
   device: Device,
   prevDevice: Device | null,
   templates: DeviceTemplate[],
   wires: Wire[],
-  updateWire: (id: string, patch: Partial<Wire>) => void
+  applyPatch: (id: string, patch: Partial<Wire>) => void
 ) {
   const tpl = templates.find((t) => t.id === device.templateId);
   const prevTpl = prevDevice ? templates.find((t) => t.id === prevDevice.templateId) : null;
@@ -152,8 +150,36 @@ function recalcBoundWires(
     if (endTerminalId && inferredEndBind) {
       patch.endBind = { deviceId, terminalId: endTerminalId };
     }
-    updateWire(wire.id, patch);
+    applyPatch(wire.id, patch);
   }
+}
+
+/** Recalculate endpoints of all wires bound to a moved/resized device.
+ *  Maintains orthogonality of the first/last segment by inspecting the neighbour segment. */
+function recalcBoundWires(
+  deviceId: string,
+  device: Device,
+  prevDevice: Device | null,
+  templates: DeviceTemplate[],
+  wires: Wire[],
+  updateWire: (id: string, patch: Partial<Wire>) => void
+) {
+  recalcBoundWiresCore(deviceId, device, prevDevice, templates, wires, updateWire);
+}
+
+function recalcBoundWiresOnList(
+  deviceId: string,
+  device: Device,
+  prevDevice: Device | null,
+  templates: DeviceTemplate[],
+  wires: Wire[]
+) {
+  const next = wires.slice();
+  recalcBoundWiresCore(deviceId, device, prevDevice, templates, next, (id, patch) => {
+    const idx = next.findIndex((wire) => wire.id === id);
+    if (idx >= 0) next[idx] = { ...next[idx], ...patch };
+  });
+  return next;
 }
 
 // World position of a terminal accounting for device rotation
@@ -523,6 +549,7 @@ function computeJumpPoints(
 }
 
 const JUMP_R = 7;
+const WIRE_CORNER_R = 8; // กำหนดเส้นโค้ง
 
 function buildWirePathData(
   points: number[],
@@ -555,6 +582,56 @@ function buildWirePathData(
   }
   return d;
 }
+
+function buildRoundedPolylinePathData(points: number[], cornerRadius = WIRE_CORNER_R): string {
+  const count = Math.floor(points.length / 2);
+  if (count < 2) return "";
+
+  const get = (i: number) => ({ x: points[i * 2], y: points[i * 2 + 1] });
+  const p0 = get(0);
+  let d = `M ${p0.x} ${p0.y}`;
+
+  if (count === 2) {
+    const p1 = get(1);
+    return `${d} L ${p1.x} ${p1.y}`;
+  }
+
+  for (let i = 1; i < count - 1; i++) {
+    const prev = get(i - 1);
+    const curr = get(i);
+    const next = get(i + 1);
+
+    const v1x = curr.x - prev.x;
+    const v1y = curr.y - prev.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+
+    const len1 = Math.hypot(v1x, v1y);
+    const len2 = Math.hypot(v2x, v2y);
+    if (len1 < 0.001 || len2 < 0.001) {
+      d += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    const cut = Math.min(cornerRadius, len1 / 2, len2 / 2);
+    const u1x = v1x / len1;
+    const u1y = v1y / len1;
+    const u2x = v2x / len2;
+    const u2y = v2y / len2;
+
+    const inX = curr.x - u1x * cut;
+    const inY = curr.y - u1y * cut;
+    const outX = curr.x + u2x * cut;
+    const outY = curr.y + u2y * cut;
+
+    d += ` L ${inX} ${inY}`;
+    d += ` Q ${curr.x} ${curr.y} ${outX} ${outY}`;
+  }
+
+  const last = get(count - 1);
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
 // ────────────────────────────────────────────────────────────────────
 
 function WireNode({
@@ -569,6 +646,7 @@ function WireNode({
   onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
 }) {
   const hasJumps = jumpPoints && jumpPoints.length > 0;
+  const visualThickness = Math.max(1, wire.thickness + 0.6);
   const shadowProps = {
     shadowColor: selected ? "#2563eb" : undefined,
     shadowBlur: selected ? 8 : 0,
@@ -593,7 +671,7 @@ function WireNode({
             id={wire.id}
             data={buildWirePathData(wire.points, jumpPoints!)}
             stroke={wire.color}
-            strokeWidth={wire.thickness}
+            strokeWidth={visualThickness}
             fill="transparent"
             lineCap="round"
             lineJoin="round"
@@ -602,18 +680,30 @@ function WireNode({
           />
         </>
       ) : (
-        <Line
-          id={wire.id}
-          points={wire.points}
-          stroke={wire.color}
-          strokeWidth={wire.thickness}
-          lineCap="round"
-          lineJoin="round"
-          hitStrokeWidth={Math.max(wire.thickness + 8, 12)}
-          onMouseDown={onSelect}
-          onTap={onSelect}
-          {...shadowProps}
-        />
+        <>
+          {/* Transparent wide line for hit-testing */}
+          <Line
+            points={wire.points}
+            stroke="transparent"
+            strokeWidth={Math.max(wire.thickness + 8, 12)}
+            hitStrokeWidth={Math.max(wire.thickness + 8, 12)}
+            onMouseDown={onSelect}
+            onTap={onSelect}
+            listening
+          />
+          {/* Rounded-corner visual path */}
+          <KPath
+            id={wire.id}
+            data={buildRoundedPolylinePathData(wire.points)}
+            stroke={wire.color}
+            strokeWidth={visualThickness}
+            fill="transparent"
+            lineCap="round"
+            lineJoin="round"
+            listening={false}
+            {...shadowProps}
+          />
+        </>
       )}
     </>
   );
@@ -624,17 +714,27 @@ function WireNode({
 function WireSegmentHandles({
   wire,
   scale,
+  devices,
+  templates,
   onCommit,
   onDeleteCorner,
+  onEndpointDragStateChange,
 }: {
   wire: Wire;
   scale: number;
-  onCommit: (pts: number[]) => void;
+  devices: Device[];
+  templates: DeviceTemplate[];
+  onCommit: (
+    pts: number[],
+    bindPatch?: Partial<Pick<Wire, "startBind" | "endBind">>
+  ) => void;
   onDeleteCorner: (idx: number) => void;
+  onEndpointDragStateChange?: (dragging: boolean) => void;
 }) {
   const pts = wire.points;
   const count = Math.floor(pts.length / 2);
   const dragRef = useRef<{ origPts: number[]; segIdx: number; orient: "H" | "V"; aBound: boolean; bBound: boolean } | null>(null);
+  const endpointDragRef = useRef<{ origPts: number[]; endpoint: "start" | "end" } | null>(null);
   if (count < 2) return null;
   const r = 5 / scale;
   const stroke = 1.5 / scale;
@@ -642,6 +742,50 @@ function WireSegmentHandles({
   const EPS = 0.5;
   const startBound = !!wire.startBind;
   const endBound = !!wire.endBind;
+
+  const moveEndpoint = (
+    origPts: number[],
+    endpoint: "start" | "end",
+    x: number,
+    y: number
+  ) => {
+    const np = [...origPts];
+    const n = np.length;
+    if (endpoint === "start") {
+      np[0] = x;
+      np[1] = y;
+      if (n >= 4) {
+        const nx = np[2];
+        const ny = np[3];
+        const dx = Math.abs(nx - x);
+        const dy = Math.abs(ny - y);
+        if (dx >= dy) np[3] = y;
+        else np[2] = x;
+      }
+    } else {
+      np[n - 2] = x;
+      np[n - 1] = y;
+      if (n >= 4) {
+        const px = np[n - 4];
+        const py = np[n - 3];
+        const dx = Math.abs(px - x);
+        const dy = Math.abs(py - y);
+        if (dx >= dy) np[n - 3] = y;
+        else np[n - 4] = x;
+      }
+    }
+    return mergeCollinear(ensureOrthogonal(np));
+  };
+
+  const snapBindToPoint = (bind: WireBind | null, wx: number, wy: number) => {
+    if (!bind) return { x: wx, y: wy };
+    const dev = devices.find((d) => d.id === bind.deviceId);
+    if (!dev) return { x: wx, y: wy };
+    const tpl = templates.find((t) => t.id === dev.templateId);
+    const term = tpl?.terminals.find((t) => t.id === bind.terminalId);
+    if (!term) return { x: wx, y: wy };
+    return terminalWorld(dev, term.fx, term.fy);
+  };
 
   return (
     <Group>
@@ -659,8 +803,8 @@ function WireSegmentHandles({
         const aBound = i === 0 && startBound;
         const bBound = i + 1 === count - 1 && endBound;
         const lockedBoth = aBound && bBound;
-        const badgeW = 18 / scale;
-        const badgeH = 10 / scale;
+        const badgeW = (isV ? 10 : 18) / scale;
+        const badgeH = (isV ? 18 : 10) / scale;
         const glyph = 4 / scale;
 
         return (
@@ -778,6 +922,7 @@ function WireSegmentHandles({
         const y = pts[i * 2 + 1];
         const isStart = i === 0;
         const isEnd = i === count - 1;
+        const isEndpoint = isStart || isEnd;
         const bound = (isStart && startBound) || (isEnd && endBound);
         return (
           <Circle
@@ -788,11 +933,12 @@ function WireSegmentHandles({
             fill={bound ? "#9ca3af" : "#ffffff"}
             stroke="#2563eb"
             strokeWidth={stroke}
+            draggable={isEndpoint}
             onMouseEnter={(e) => {
               const stage = e.target.getStage();
               if (stage) {
                 stage.container().style.cursor =
-                  !isStart && !isEnd ? "not-allowed" : bound ? "default" : "move";
+                  !isStart && !isEnd ? "not-allowed" : "move";
               }
             }}
             onMouseLeave={(e) => {
@@ -805,6 +951,45 @@ function WireSegmentHandles({
               if (e.evt.shiftKey && !isStart && !isEnd) {
                 onDeleteCorner(i);
               }
+            }}
+            onDragStart={(e) => {
+              if (!isEndpoint) return;
+              e.cancelBubble = true;
+              endpointDragRef.current = {
+                origPts: [...pts],
+                endpoint: isStart ? "start" : "end",
+              };
+              onEndpointDragStateChange?.(true);
+            }}
+            onDragMove={(e) => {
+              const node = e.target;
+              const stage = node.getStage();
+              if (!stage || !endpointDragRef.current) return;
+              const ptr = stage.getPointerPosition();
+              if (!ptr) return;
+              const sc = stage.scaleX();
+              const wx = (ptr.x - stage.x()) / sc;
+              const wy = (ptr.y - stage.y()) / sc;
+              const snap = nearestTerminalBind(wx, wy, devices, templates, 14 / scale);
+              const snappedPoint = snapBindToPoint(snap, wx, wy);
+              const endpoint = endpointDragRef.current.endpoint;
+              const livePts = moveEndpoint(
+                endpointDragRef.current.origPts,
+                endpoint,
+                snappedPoint.x,
+                snappedPoint.y
+              );
+              const bindPatch: Partial<Pick<Wire, "startBind" | "endBind">> =
+                endpoint === "start"
+                  ? { startBind: snap ?? undefined }
+                  : { endBind: snap ?? undefined };
+              onCommit(livePts, bindPatch);
+              node.position({ x: 0, y: 0 });
+            }}
+            onDragEnd={(e) => {
+              e.target.position({ x: 0, y: 0 });
+              endpointDragRef.current = null;
+              onEndpointDragStateChange?.(false);
             }}
           />
         );
@@ -914,9 +1099,12 @@ export default function DeviceCanvas() {
   // Local visual path for the orthogonal draft wire (includes elbow preview)
   const [draftVisual, setDraftVisual] = useState<number[] | null>(null);
   const [dragGuides, setDragGuides] = useState<number[][]>([]);
+  const [showTerminalTargets, setShowTerminalTargets] = useState(false);
+  const [showMiniMap, setShowMiniMap] = useState(false);
   const vFirstRef = useRef(false); // Shift = vertical-first routing
   const draftStartBindRef = useRef<WireBind | null>(null); // terminal the wire starts from
   const draftStartWireBindRef = useRef<{ wireId: string; t: number } | null>(null); // wire tap start
+  const exportFrameSnapshotRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null);
 
   const {
     devices,
@@ -943,6 +1131,7 @@ export default function DeviceCanvas() {
     exportFrame,
     setExportFrame,
   } = useEditorStore();
+  const prevToolRef = useRef(activeTool);
 
   // Resize observer
   useEffect(() => {
@@ -966,9 +1155,24 @@ export default function DeviceCanvas() {
       const inInput = tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.isContentEditable);
 
       if (e.key === "Escape") {
+        if (!inInput && activeTool === "exportFrame") {
+          e.preventDefault();
+          const snapshot = exportFrameSnapshotRef.current;
+          useEditorStore.getState().setExportFrame(snapshot ?? null);
+          useEditorStore.getState().setExportPreview(null);
+          useEditorStore.getState().setTool("select");
+          return;
+        }
         cancelDraftWire();
         setDraftVisual(null);
         clearSelected();
+      }
+
+      if (!inInput && e.key === "Enter" && activeTool === "exportFrame") {
+        e.preventDefault();
+        useEditorStore.getState().setExportPreview(null);
+        useEditorStore.getState().setTool("select");
+        return;
       }
 
       if (!inInput && !e.ctrlKey && !e.metaKey) {
@@ -1017,6 +1221,7 @@ export default function DeviceCanvas() {
       window.removeEventListener("keyup", onKeyUp);
     };
   }, [
+    activeTool,
     cancelDraftWire,
     clearSelected,
     selectedIds,
@@ -1026,9 +1231,22 @@ export default function DeviceCanvas() {
     removeWire,
   ]);
 
+  // Keep a snapshot only once when entering export-frame mode for ESC cancel/restore
+  useEffect(() => {
+    const prev = prevToolRef.current;
+    if (activeTool === "exportFrame" && prev !== "exportFrame") {
+      exportFrameSnapshotRef.current = exportFrame ? { ...exportFrame } : null;
+    }
+    if (activeTool !== "exportFrame" && prev === "exportFrame") {
+      exportFrameSnapshotRef.current = null;
+    }
+    prevToolRef.current = activeTool;
+  }, [activeTool, exportFrame]);
+
   // Tool switch cleanup: prevent stale guide overlays from previous tool
   useEffect(() => {
     setDragGuides([]);
+    if (activeTool !== "select") setShowTerminalTargets(false);
     if (activeTool !== "wire") {
       setDraftVisual(null);
       draftStartBindRef.current = null;
@@ -1089,6 +1307,117 @@ export default function DeviceCanvas() {
       y: p.y - mousePointTo.y * newScale,
     });
   };
+
+  const zoomAtCenter = (nextScale: number) => {
+    const clamped = Math.min(4, Math.max(0.2, nextScale));
+    const cx = size.w / 2;
+    const cy = size.h / 2;
+    const wx = (cx - view.x) / view.scale;
+    const wy = (cy - view.y) / view.scale;
+    setView({
+      scale: clamped,
+      x: cx - wx * clamped,
+      y: cy - wy * clamped,
+    });
+  };
+
+  const getObjectsBounds = () => {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const d of devices) {
+      minX = Math.min(minX, d.x);
+      minY = Math.min(minY, d.y);
+      maxX = Math.max(maxX, d.x + d.width);
+      maxY = Math.max(maxY, d.y + d.height);
+    }
+    for (const w of wires) {
+      for (let i = 0; i < w.points.length; i += 2) {
+        minX = Math.min(minX, w.points[i]);
+        minY = Math.min(minY, w.points[i + 1]);
+        maxX = Math.max(maxX, w.points[i]);
+        maxY = Math.max(maxY, w.points[i + 1]);
+      }
+    }
+
+    if (!isFinite(minX)) return null;
+    return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
+  };
+
+  const centerAllObjects = () => {
+    const b = getObjectsBounds();
+    if (!b) return;
+    const worldCx = (b.minX + b.maxX) / 2;
+    const worldCy = (b.minY + b.maxY) / 2;
+    const screenCx = size.w / 2;
+    const screenCy = size.h / 2;
+    setView((prev) => ({
+      ...prev,
+      x: screenCx - worldCx * prev.scale,
+      y: screenCy - worldCy * prev.scale,
+    }));
+  };
+
+  const miniMapData = useMemo(() => {
+    const viewport = {
+      minX: -view.x / view.scale,
+      minY: -view.y / view.scale,
+      maxX: (-view.x + size.w) / view.scale,
+      maxY: (-view.y + size.h) / view.scale,
+    };
+
+    const b = getObjectsBounds();
+    const minX = Math.min(b?.minX ?? viewport.minX, viewport.minX);
+    const minY = Math.min(b?.minY ?? viewport.minY, viewport.minY);
+    const maxX = Math.max(b?.maxX ?? viewport.maxX, viewport.maxX);
+    const maxY = Math.max(b?.maxY ?? viewport.maxY, viewport.maxY);
+
+    const width = Math.max(200, maxX - minX);
+    const height = Math.max(120, maxY - minY);
+    const pad = 20;
+
+    return {
+      minX: minX - pad,
+      minY: minY - pad,
+      width: width + pad * 2,
+      height: height + pad * 2,
+      viewport,
+    };
+  }, [devices, wires, view, size]);
+
+  // Ensure export frame tool is always usable (even with no objects selected/available)
+  useEffect(() => {
+    const wantsExportFrame = activeTool === "exportFrame" || !!exportPreview;
+    if (!wantsExportFrame || exportFrame) return;
+
+    const b = getObjectsBounds();
+    if (b) {
+      const pad = 20;
+      setExportFrame({
+        x: b.minX - pad,
+        y: b.minY - pad,
+        width: Math.max(120, b.width + pad * 2),
+        height: Math.max(80, b.height + pad * 2),
+      });
+      return;
+    }
+
+    // Fallback: center a default frame in current viewport
+    const vw = size.w / view.scale;
+    const vh = size.h / view.scale;
+    const wx0 = -view.x / view.scale;
+    const wy0 = -view.y / view.scale;
+    const fw = Math.max(160, vw * 0.5);
+    const fh = Math.max(100, vh * 0.5);
+    setExportFrame({
+      x: wx0 + (vw - fw) / 2,
+      y: wy0 + (vh - fh) / 2,
+      width: fw,
+      height: fh,
+    });
+  }, [activeTool, exportPreview, exportFrame, size, view, setExportFrame, devices, wires]);
 
   const snapDevicePosition = (device: Device, x: number, y: number) => {
     const threshold = 8 / view.scale;
@@ -1283,6 +1612,7 @@ export default function DeviceCanvas() {
 
   const onStageMouseUp = () => {
     setDragGuides([]);
+    setShowTerminalTargets(false);
     if (activeTool === "select" && selBox && selStart.current) {
       // pick devices + wires intersecting the box
       if (selBox.w > 3 && selBox.h > 3) {
@@ -1475,22 +1805,28 @@ export default function DeviceCanvas() {
                   !("height" in patch) &&
                   !("rotation" in patch);
 
-                if (dragOnly) {
-                  const snapped = snapDevicePosition(d, patch.x as number, patch.y as number);
-                  nextPatch = { ...patch, x: snapped.x, y: snapped.y };
-                  if (dragNode) {
-                    dragNode.position({ x: snapped.x, y: snapped.y });
-                  }
-                  setDragGuides(snapped.guides);
-                } else {
-                  setDragGuides([]);
-                }
-
                 const movingMulti =
                   dragOnly &&
                   activeTool === "select" &&
                   selectedIds.length > 1 &&
                   selectedIds.includes(d.id);
+
+                if (dragOnly) {
+                  if (movingMulti) {
+                    // Group move: avoid per-item snapping to prevent jitter/overshoot.
+                    nextPatch = patch;
+                    setDragGuides([]);
+                  } else {
+                    const snapped = snapDevicePosition(d, patch.x as number, patch.y as number);
+                    nextPatch = { ...patch, x: snapped.x, y: snapped.y };
+                    if (dragNode) {
+                      dragNode.position({ x: snapped.x, y: snapped.y });
+                    }
+                    setDragGuides(snapped.guides);
+                  }
+                } else {
+                  setDragGuides([]);
+                }
 
                 if (!movingMulti) {
                   updateDevice(d.id, nextPatch);
@@ -1501,31 +1837,48 @@ export default function DeviceCanvas() {
                   return;
                 }
 
-                const dx = (nextPatch.x as number) - d.x;
-                const dy = (nextPatch.y as number) - d.y;
-                if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) return;
+                const targetX = nextPatch.x as number;
+                const targetY = nextPatch.y as number;
 
-                const state = useEditorStore.getState();
                 const sel = new Set(selectedIds);
+                useEditorStore.setState((state) => {
+                  const currentDragged = state.devices.find((device) => device.id === d.id);
+                  if (!currentDragged) return state;
 
-                // Move all selected devices
-                for (const od of state.devices) {
-                  if (!sel.has(od.id)) continue;
-                  state.updateDevice(od.id, { x: od.x + dx, y: od.y + dy });
-                }
+                  const dx = targetX - currentDragged.x;
+                  const dy = targetY - currentDragged.y;
+                  if (Math.abs(dx) < 0.0001 && Math.abs(dy) < 0.0001) return state;
 
-                // Move all selected wires too
-                for (const w of state.wires) {
-                  if (!sel.has(w.id)) continue;
-                  state.updateWire(w.id, { points: shiftPoints(w.points, dx, dy) });
-                }
+                  const movedDevices = state.devices.filter((device) => sel.has(device.id));
+                  const nextDevices = state.devices.map((device) =>
+                    sel.has(device.id)
+                      ? { ...device, x: device.x + dx, y: device.y + dy }
+                      : device
+                  );
 
-                // Recalculate bound wire endpoints for all moved devices
-                const after = useEditorStore.getState();
-                for (const od of after.devices) {
-                  if (!sel.has(od.id)) continue;
-                  recalcBoundWires(od.id, od, od, after.templates, after.wires, after.updateWire);
-                }
+                  let nextWires = state.wires.map((wire) =>
+                    sel.has(wire.id)
+                      ? { ...wire, points: shiftPoints(wire.points, dx, dy) }
+                      : wire
+                  );
+
+                  for (const prevDevice of movedDevices) {
+                    const updatedDevice = nextDevices.find((device) => device.id === prevDevice.id);
+                    if (!updatedDevice) continue;
+                    nextWires = recalcBoundWiresOnList(
+                      prevDevice.id,
+                      updatedDevice,
+                      prevDevice,
+                      state.templates,
+                      nextWires
+                    );
+                  }
+
+                  return {
+                    devices: nextDevices,
+                    wires: nextWires,
+                  };
+                });
               }}
             />
           ))}
@@ -1573,12 +1926,13 @@ export default function DeviceCanvas() {
             );
           })}
 
-          {/* Terminals overlay on top (wire mode only) */}
-          {activeTool === "wire" && devices.flatMap((d) => {
+          {/* Terminals overlay on top (wire mode or endpoint dragging) */}
+          {(activeTool === "wire" || showTerminalTargets) && devices.flatMap((d) => {
             const tpl = templates.find((t) => t.id === d.templateId);
             return (tpl?.terminals ?? []).flatMap((t) => {
               const p = terminalWorld(d, t.fx, t.fy);
               const r = 6 / view.scale;
+              const interactive = activeTool === "wire";
               return [
                 <Circle
                   key={`${d.id}:${t.id}:dot`}
@@ -1586,18 +1940,21 @@ export default function DeviceCanvas() {
                   y={p.y}
                   radius={r}
                   fill="#ffffff"
-                  stroke="#dc2626"
+                  stroke={interactive ? "#dc2626" : "#2563eb"}
                   strokeWidth={2 / view.scale}
-                  listening
+                  listening={interactive}
                   onMouseEnter={(e) => {
+                    if (!interactive) return;
                     const stage = e.target.getStage();
                     if (stage) stage.container().style.cursor = "pointer";
                   }}
                   onMouseLeave={(e) => {
+                    if (!interactive) return;
                     const stage = e.target.getStage();
                     if (stage) stage.container().style.cursor = cursor;
                   }}
                   onMouseDown={(e) => {
+                    if (!interactive) return;
                     e.cancelBubble = true;
                     if (!draftFixed) {
                       draftStartBindRef.current = { deviceId: d.id, terminalId: t.id };
@@ -1663,10 +2020,13 @@ export default function DeviceCanvas() {
                   key={`h:${w.id}`}
                   wire={w}
                   scale={view.scale}
-                  onCommit={(pts) => {
+                  devices={devices}
+                  templates={templates}
+                  onEndpointDragStateChange={setShowTerminalTargets}
+                  onCommit={(pts, bindPatch) => {
                     const resolved = resolveAndLockWireEndpoints(
                       pts,
-                      w,
+                      bindPatch ? { ...w, ...bindPatch } : w,
                       useEditorStore.getState().devices,
                       useEditorStore.getState().templates
                     );
@@ -1786,8 +2146,19 @@ export default function DeviceCanvas() {
           const ds = 6 / view.scale;
           const dg = 4 / view.scale;
           const hs = 8 / view.scale;
+          const edgeHit = 12 / view.scale;
           const minW = 24 / view.scale;
           const minH = 24 / view.scale;
+
+          const setStageCursor = (e: Konva.KonvaEventObject<MouseEvent>, next: string) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = next;
+          };
+
+          const resetStageCursor = (e: Konva.KonvaEventObject<MouseEvent>) => {
+            const stage = e.target.getStage();
+            if (stage) stage.container().style.cursor = cursor;
+          };
 
           const setFrameSafe = (next: { x: number; y: number; width: number; height: number }) => {
             setExportFrame({
@@ -1799,7 +2170,7 @@ export default function DeviceCanvas() {
           };
 
           return (
-            <Layer listening={canEditFrame}>
+            <Layer id="export-frame-layer" listening={canEditFrame}>
               {/* dim overlay outside bbox - 4 rects */}
               <Rect x={-99999} y={-99999} width={bx + 99999} height={99999 * 2} fill="rgba(80,80,80,0.40)" listening={false} />
               <Rect x={bx + bw} y={-99999} width={99999} height={99999 * 2} fill="rgba(80,80,80,0.40)" listening={false} />
@@ -1812,6 +2183,8 @@ export default function DeviceCanvas() {
                 dash={[ds, dg]}
                 fill="transparent"
                 draggable={canEditFrame}
+                onMouseEnter={(e) => setStageCursor(e, "move")}
+                onMouseLeave={resetStageCursor}
                 onDragMove={(e) => {
                   setFrameSafe({ x: e.target.x(), y: e.target.y(), width: bw, height: bh });
                 }}
@@ -1819,6 +2192,142 @@ export default function DeviceCanvas() {
               {/* corner handles */}
               {canEditFrame && (
                 <>
+                  {/* edge handles */}
+                  <Rect
+                    x={bx + bw / 2 - hs}
+                    y={by - hs / 2}
+                    width={hs * 2}
+                    height={hs}
+                    fill="#ffffff"
+                    stroke="#2563eb"
+                    strokeWidth={1 / view.scale}
+                    cornerRadius={1 / view.scale}
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ns-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const bottom = by + bh;
+                      const ny = Math.min(e.target.y() + hs / 2, bottom - minH);
+                      setFrameSafe({ x: bx, y: ny, width: bw, height: bottom - ny });
+                    }}
+                  />
+                  <Rect
+                    x={bx + bw / 2 - hs}
+                    y={by + bh - hs / 2}
+                    width={hs * 2}
+                    height={hs}
+                    fill="#ffffff"
+                    stroke="#2563eb"
+                    strokeWidth={1 / view.scale}
+                    cornerRadius={1 / view.scale}
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ns-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const top = by;
+                      const ny = Math.max(e.target.y() + hs / 2, top + minH);
+                      setFrameSafe({ x: bx, y: top, width: bw, height: ny - top });
+                    }}
+                  />
+                  <Rect
+                    x={bx - hs / 2}
+                    y={by + bh / 2 - hs}
+                    width={hs}
+                    height={hs * 2}
+                    fill="#ffffff"
+                    stroke="#2563eb"
+                    strokeWidth={1 / view.scale}
+                    cornerRadius={1 / view.scale}
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ew-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const right = bx + bw;
+                      const nx = Math.min(e.target.x() + hs / 2, right - minW);
+                      setFrameSafe({ x: nx, y: by, width: right - nx, height: bh });
+                    }}
+                  />
+                  <Rect
+                    x={bx + bw - hs / 2}
+                    y={by + bh / 2 - hs}
+                    width={hs}
+                    height={hs * 2}
+                    fill="#ffffff"
+                    stroke="#2563eb"
+                    strokeWidth={1 / view.scale}
+                    cornerRadius={1 / view.scale}
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ew-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const left = bx;
+                      const nx = Math.max(e.target.x() + hs / 2, left + minW);
+                      setFrameSafe({ x: left, y: by, width: nx - left, height: bh });
+                    }}
+                  />
+
+                  {/* invisible wider hit zones on edges for easier pointer targeting */}
+                  <Rect
+                    x={bx}
+                    y={by - edgeHit / 2}
+                    width={bw}
+                    height={edgeHit}
+                    fill="rgba(0,0,0,0.001)"
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ns-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const bottom = by + bh;
+                      const ny = Math.min(e.target.y() + edgeHit / 2, bottom - minH);
+                      setFrameSafe({ x: bx, y: ny, width: bw, height: bottom - ny });
+                    }}
+                  />
+                  <Rect
+                    x={bx}
+                    y={by + bh - edgeHit / 2}
+                    width={bw}
+                    height={edgeHit}
+                    fill="rgba(0,0,0,0.001)"
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ns-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const top = by;
+                      const ny = Math.max(e.target.y() + edgeHit / 2, top + minH);
+                      setFrameSafe({ x: bx, y: top, width: bw, height: ny - top });
+                    }}
+                  />
+                  <Rect
+                    x={bx - edgeHit / 2}
+                    y={by}
+                    width={edgeHit}
+                    height={bh}
+                    fill="rgba(0,0,0,0.001)"
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ew-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const right = bx + bw;
+                      const nx = Math.min(e.target.x() + edgeHit / 2, right - minW);
+                      setFrameSafe({ x: nx, y: by, width: right - nx, height: bh });
+                    }}
+                  />
+                  <Rect
+                    x={bx + bw - edgeHit / 2}
+                    y={by}
+                    width={edgeHit}
+                    height={bh}
+                    fill="rgba(0,0,0,0.001)"
+                    draggable
+                    onMouseEnter={(e) => setStageCursor(e, "ew-resize")}
+                    onMouseLeave={resetStageCursor}
+                    onDragMove={(e) => {
+                      const left = bx;
+                      const nx = Math.max(e.target.x() + edgeHit / 2, left + minW);
+                      setFrameSafe({ x: left, y: by, width: nx - left, height: bh });
+                    }}
+                  />
+
                   <Rect
                     x={bx - hs / 2}
                     y={by - hs / 2}
@@ -1827,6 +2336,8 @@ export default function DeviceCanvas() {
                     fill="#2563eb"
                     cornerRadius={1 / view.scale}
                     draggable
+                    onMouseEnter={(e) => setStageCursor(e, "nwse-resize")}
+                    onMouseLeave={resetStageCursor}
                     onDragMove={(e) => {
                       const right = bx + bw;
                       const bottom = by + bh;
@@ -1843,6 +2354,8 @@ export default function DeviceCanvas() {
                     fill="#2563eb"
                     cornerRadius={1 / view.scale}
                     draggable
+                    onMouseEnter={(e) => setStageCursor(e, "nesw-resize")}
+                    onMouseLeave={resetStageCursor}
                     onDragMove={(e) => {
                       const left = bx;
                       const bottom = by + bh;
@@ -1859,6 +2372,8 @@ export default function DeviceCanvas() {
                     fill="#2563eb"
                     cornerRadius={1 / view.scale}
                     draggable
+                    onMouseEnter={(e) => setStageCursor(e, "nesw-resize")}
+                    onMouseLeave={resetStageCursor}
                     onDragMove={(e) => {
                       const right = bx + bw;
                       const top = by;
@@ -1875,6 +2390,8 @@ export default function DeviceCanvas() {
                     fill="#2563eb"
                     cornerRadius={1 / view.scale}
                     draggable
+                    onMouseEnter={(e) => setStageCursor(e, "nwse-resize")}
+                    onMouseLeave={resetStageCursor}
                     onDragMove={(e) => {
                       const left = bx;
                       const top = by;
@@ -1916,8 +2433,95 @@ export default function DeviceCanvas() {
         {activeTool === "select" &&
           "ลากเพื่อเลือกหลายชิ้น · Shift+คลิก เพิ่ม/ลบ · Del ลบ · ลากเส้นเพื่อย้าย · Shift+คลิกมุม = ลบมุม"}
         {activeTool === "pan" && "ลากเพื่อเลื่อน Canvas"}
-        {activeTool === "exportFrame" && "ลากกรอบเพื่อย้าย · ลากมุมเพื่อปรับขนาดกรอบส่งออก"}
+        {activeTool === "exportFrame" && "ลากกรอบเพื่อย้าย · ลากขอบ/มุมเพื่อปรับขนาดกรอบส่งออก · ใช้เคอร์เซอร์เมาส์ช่วยชี้จุด · Enter ยืนยัน · Esc ยกเลิก"}
       </div>
+
+      {/* Bottom-right navigation controls */}
+      <div className="absolute bottom-3 right-3 z-20 flex items-center gap-2">
+        <button
+          onClick={() => setShowMiniMap((v) => !v)}
+          className="flex h-9 items-center justify-center rounded-md border border-zinc-300 bg-white px-3 text-xs font-medium text-zinc-700 shadow-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          title="เปิด/ปิด Mini Map"
+        >
+          🗺
+        </button>
+        <div className="flex overflow-hidden rounded-md border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
+          <button
+            onClick={() => zoomAtCenter(view.scale / 1.2)}
+            className="flex h-9 w-10 items-center justify-center text-lg text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            title="Zoom Out"
+          >
+            −
+          </button>
+          <button
+            onClick={centerAllObjects}
+            className="flex h-9 w-10 items-center justify-center border-x border-zinc-300 text-sm font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            title="จัดกึ่งกลาง Object ทั้งหมด"
+          >
+            O
+          </button>
+          <button
+            onClick={() => zoomAtCenter(view.scale * 1.2)}
+            className="flex h-9 w-10 items-center justify-center text-xl text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
+            title="Zoom In"
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      {/* Mini map */}
+      {showMiniMap && (
+        <div className="absolute bottom-16 right-3 z-20 h-36 w-56 overflow-hidden rounded-md border border-zinc-300 bg-white/95 shadow-md dark:border-zinc-700 dark:bg-zinc-900/95">
+          <svg
+            className="h-full w-full"
+            viewBox={`${miniMapData.minX} ${miniMapData.minY} ${miniMapData.width} ${miniMapData.height}`}
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <rect
+              x={miniMapData.minX}
+              y={miniMapData.minY}
+              width={miniMapData.width}
+              height={miniMapData.height}
+              fill="#f8fafc"
+            />
+            {wires.map((w) => (
+              <polyline
+                key={`mm-w:${w.id}`}
+                points={w.points.join(" ")}
+                fill="none"
+                stroke={w.color || "#3b82f6"}
+                strokeWidth={Math.max(2, w.thickness)}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                opacity="0.75"
+              />
+            ))}
+            {devices.map((d) => (
+              <rect
+                key={`mm-d:${d.id}`}
+                x={d.x}
+                y={d.y}
+                width={d.width}
+                height={d.height}
+                fill="#64748b"
+                fillOpacity="0.35"
+                stroke="#334155"
+                strokeOpacity="0.6"
+              />
+            ))}
+            <rect
+              x={miniMapData.viewport.minX}
+              y={miniMapData.viewport.minY}
+              width={miniMapData.viewport.maxX - miniMapData.viewport.minX}
+              height={miniMapData.viewport.maxY - miniMapData.viewport.minY}
+              fill="none"
+              stroke="#2563eb"
+              strokeWidth="3"
+            />
+          </svg>
+        </div>
+      )}
 
       {/* expose stage to window for export */}
       <StageBridge stageRef={stageRef} viewRef={view} />

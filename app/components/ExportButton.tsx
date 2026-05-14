@@ -48,7 +48,9 @@ function exportByFrame(frame: ExportFrame, stage: Konva.Stage, opts: ExportOptio
   const oldX = stage.x(), oldY = stage.y();
   const oldScaleX = stage.scaleX(), oldScaleY = stage.scaleY();
   const gridLayer = stage.findOne<Konva.Layer>("#grid-layer");
+  const exportFrameLayer = stage.findOne<Konva.Layer>("#export-frame-layer");
   const oldGridVisible = gridLayer ? gridLayer.visible() : undefined;
+  const oldExportFrameVisible = exportFrameLayer ? exportFrameLayer.visible() : undefined;
   let bgLayer: Konva.Layer | null = null;
 
   try {
@@ -64,6 +66,7 @@ function exportByFrame(frame: ExportFrame, stage: Konva.Stage, opts: ExportOptio
     const cropY = frame.y;
 
     if (gridLayer) gridLayer.visible(false);
+    if (exportFrameLayer) exportFrameLayer.visible(false);
 
     // Resize stage to cover the crop region so toDataURL has the full pixels.
     // Shift stage so (cropX,cropY) → screen (0,0); world content beyond viewport
@@ -101,6 +104,7 @@ function exportByFrame(frame: ExportFrame, stage: Konva.Stage, opts: ExportOptio
   } finally {
     if (bgLayer) bgLayer.destroy();
     if (gridLayer && oldGridVisible !== undefined) gridLayer.visible(oldGridVisible);
+    if (exportFrameLayer && oldExportFrameVisible !== undefined) exportFrameLayer.visible(oldExportFrameVisible);
     stage.size({ width: oldW, height: oldH });
     stage.position({ x: oldX, y: oldY });
     stage.scale({ x: oldScaleX, y: oldScaleY });
@@ -116,8 +120,7 @@ const PIXEL_RATIOS = [
   { label: "4× (288 dpi)", value: 4 },
 ];
 
-function ExportModal({ mode, onClose, onExport }: {
-  mode: "selection" | "all";
+function ExportModal({ onClose, onExport }: {
   onClose: () => void;
   onExport: (opts: ExportOptions) => void;
 }) {
@@ -134,7 +137,7 @@ function ExportModal({ mode, onClose, onExport }: {
           <div className="flex items-center gap-2">
             <ImageDown size={16} className="text-blue-600" />
             <h2 className="text-sm font-semibold">
-              Export {mode === "all" ? "All" : "Selection"}
+              Export All
             </h2>
           </div>
           <button onClick={onClose} className="flex items-center justify-center rounded p-1 hover:bg-zinc-100 dark:hover:bg-zinc-800">
@@ -232,23 +235,19 @@ function ExportModal({ mode, onClose, onExport }: {
 
 // ── Main Export Button ─────────────────────────────────────────────────────
 export default function ExportButton() {
-  const selectedIds = useEditorStore((s) => s.selectedIds);
   const devices = useEditorStore((s) => s.devices);
   const wires = useEditorStore((s) => s.wires);
   const setExportPreview = useEditorStore((s) => s.setExportPreview);
   const exportFrame = useEditorStore((s) => s.exportFrame);
   const setExportFrame = useEditorStore((s) => s.setExportFrame);
-  const [modalMode, setModalMode] = useState<"selection" | "all" | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
 
-  const getIds = (mode: "selection" | "all") =>
-    mode === "selection" && selectedIds.length > 0
-      ? selectedIds
-      : [...devices.map((d) => d.id), ...wires.map((w) => w.id)];
+  const getAllIds = () => [...devices.map((d) => d.id), ...wires.map((w) => w.id)];
 
-  const openModal = (mode: "selection" | "all") => {
+  const openModal = () => {
     const stage = (window as unknown as StageRef).__taraStage;
-    const ids = getIds(mode);
-    setModalMode(mode);
+    const ids = getAllIds();
+    setModalOpen(true);
     setExportPreview({ ids, padding: 0 });
     if (stage && !exportFrame) {
       const box = computeBBox(ids, stage);
@@ -264,18 +263,15 @@ export default function ExportButton() {
   };
 
   const closeModal = () => {
-    setModalMode(null);
+    setModalOpen(false);
     setExportPreview(null);
   };
 
-  const handleExport = (mode: "selection" | "all", opts: ExportOptions) => {
+  const handleExport = (opts: ExportOptions) => {
     const stage = (window as unknown as StageRef).__taraStage;
     if (!stage) return;
 
-    const ids =
-      mode === "selection" && selectedIds.length > 0
-        ? selectedIds
-        : [...devices.map((d) => d.id), ...wires.map((w) => w.id)];
+    const ids = getAllIds();
 
     if (ids.length === 0) { alert("ไม่มี Object ให้ Export"); return; }
 
@@ -297,7 +293,7 @@ export default function ExportButton() {
     if (!dataUrl) { alert("ไม่สามารถคำนวณ Bounding Box ได้"); return; }
 
     const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-    downloadDataUrl(dataUrl, `wiring-${mode}-${stamp}.png`);
+    downloadDataUrl(dataUrl, `wiring-all-${stamp}.png`);
     closeModal();
   };
 
@@ -312,36 +308,27 @@ export default function ExportButton() {
 
   return (
     <>
-      <div className="grid grid-cols-2 gap-1.5">
+      <div className="grid grid-cols-1 gap-1.5">
         <button
-          onClick={() => openModal("selection")}
-          disabled={selectedIds.length === 0}
+          onClick={openModal}
           className="rounded-md bg-blue-600 px-2 py-2 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
-          title="Export เฉพาะที่เลือก"
-        >
-          Export Selected
-        </button>
-        <button
-          onClick={() => openModal("all")}
-          className="rounded-md border border-zinc-300 px-2 py-2 text-xs font-medium hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
           title="Export ทั้งหมด"
         >
           Export All
         </button>
         <button
           onClick={exportProject}
-          className="col-span-2 flex items-center justify-center gap-1.5 rounded-md border border-zinc-300 px-2 py-2 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+          className="flex items-center justify-center gap-1.5 rounded-md border border-zinc-300 px-2 py-2 text-xs hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
         >
           <FileJson size={13} />
           Save Project (.json)
         </button>
       </div>
 
-      {modalMode && (
+      {modalOpen && (
         <ExportModal
-          mode={modalMode}
           onClose={closeModal}
-          onExport={(opts) => handleExport(modalMode, opts)}
+          onExport={handleExport}
         />
       )}
     </>
