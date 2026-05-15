@@ -3,6 +3,7 @@ import { connectDB } from "@/lib/mongodb";
 import { ProjectModel } from "@/lib/models/Project";
 
 type FeaturedProject = {
+  projectId?: string;
   title: string;
   tag: string;
   description: string;
@@ -220,6 +221,7 @@ async function getFeaturedProjects(): Promise<FeaturedProject[]> {
       const wireCount = Array.isArray(doc.wires) ? doc.wires.length : 0;
 
       return {
+        projectId: typeof doc.projectId === "string" ? doc.projectId : undefined,
         title: doc.name || "Untitled",
         tag: "Project",
         description: `มีอุปกรณ์ ${deviceCount} ชิ้น และสาย ${wireCount} เส้น`,
@@ -306,12 +308,22 @@ export default async function Home() {
                     อัปเดตล่าสุด {new Date(project.updatedAt).toLocaleString("th-TH")}
                   </p>
                 ) : null}
-                <Link
-                  href="/studio"
-                  className="mt-4 inline-flex text-sm font-medium text-violet-300 hover:text-violet-200"
-                >
-                  ใช้เป็นต้นแบบ →
-                </Link>
+                <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-sm font-medium">
+                  {project.projectId ? (
+                    <Link
+                      href={`/view/${project.projectId}`}
+                      className="text-violet-300 hover:text-violet-200"
+                    >
+                      ดูโปรเจค →
+                    </Link>
+                  ) : null}
+                  <Link
+                    href="/studio"
+                    className="text-zinc-400 hover:text-zinc-200"
+                  >
+                    ใช้เป็นต้นแบบ
+                  </Link>
+                </div>
               </article>
             ))}
           </div>
