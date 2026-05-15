@@ -30,8 +30,10 @@ export function DbSync() {
       .then((r) => r.json())
       .then((lib) => {
         if (!lib) return;
-        if (lib.templates?.length) store.setField("templates", lib.templates);
-        if (lib.categories?.length) store.setField("categories", lib.categories);
+        const patch: Record<string, unknown> = {};
+        if (lib.templates?.length) patch.templates = lib.templates;
+        if (lib.categories?.length) patch.categories = lib.categories;
+        if (Object.keys(patch).length) useEditorStore.setState(patch);
       })
       .catch((e) => console.warn("DbSync library load error:", e));
 
@@ -65,18 +67,21 @@ export function DbSync() {
     loadProject(store.currentProjectId)
       .then((data) => {
         if (!data) return;
-        store.setField("devices", data.devices ?? []);
-        store.setField("wires", data.wires ?? []);
-        store.setField("labels", data.labels ?? []);
-        if (Array.isArray(data.wireLayers) && data.wireLayers.length > 0) {
-          store.setField("wireLayers", data.wireLayers);
-        }
-        if (typeof data.activeWireLayerId === "string" || data.activeWireLayerId === null) {
-          store.setField("activeWireLayerId", data.activeWireLayerId);
-        }
-        if (data.wireColor) store.setWireColor(data.wireColor);
-        if (typeof data.wireThickness === "number") store.setWireThickness(data.wireThickness);
-        if (typeof data.wireJumps === "boolean") store.setWireJumps(data.wireJumps);
+        const patch: Record<string, unknown> = {
+          devices: data.devices ?? [],
+          wires: data.wires ?? [],
+          labels: data.labels ?? [],
+          past: [],
+          future: [],
+        };
+        if (Array.isArray(data.wireLayers) && data.wireLayers.length > 0)
+          patch.wireLayers = data.wireLayers;
+        if (typeof data.activeWireLayerId === "string" || data.activeWireLayerId === null)
+          patch.activeWireLayerId = data.activeWireLayerId;
+        if (data.wireColor) patch.wireColor = data.wireColor;
+        if (typeof data.wireThickness === "number") patch.wireThickness = data.wireThickness;
+        if (typeof data.wireJumps === "boolean") patch.wireJumps = data.wireJumps;
+        useEditorStore.setState(patch);
       })
       .catch((e) => console.warn("DbSync project load error:", e))
       .finally(() => { isLoading.current = false; });

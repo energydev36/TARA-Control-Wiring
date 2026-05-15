@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { ArrowLeft } from "lucide-react";
 import { connectDB } from "@/lib/mongodb";
 import { ProjectModel } from "@/lib/models/Project";
+import { LibraryModel } from "@/lib/models/Library";
 import ProjectViewer from "./ProjectViewer";
 import type {
   ViewerDevice,
@@ -85,6 +87,20 @@ function normalizeWires(input: unknown): ViewerWire[] {
         .filter((n) => Number.isFinite(n));
       const evenPoints = points.length % 2 === 0 ? points : points.slice(0, -1);
       if (evenPoints.length < 4) return null;
+      const normBind = (raw: unknown) => {
+        if (!raw || typeof raw !== "object") return undefined;
+        const b = raw as Record<string, unknown>;
+        if (typeof b.deviceId !== "string" || typeof b.terminalId !== "string") return undefined;
+        return { deviceId: b.deviceId, terminalId: b.terminalId };
+      };
+      const normWireBind = (raw: unknown) => {
+        if (!raw || typeof raw !== "object") return undefined;
+        const b = raw as Record<string, unknown>;
+        if (typeof b.wireId !== "string") return undefined;
+        const t = toFiniteNumber(b.t, Number.NaN);
+        if (!Number.isFinite(t)) return undefined;
+        return { wireId: b.wireId, t: Math.max(0, Math.min(1, t)) };
+      };
       return {
         id: w.id,
         points: evenPoints,
@@ -92,6 +108,10 @@ function normalizeWires(input: unknown): ViewerWire[] {
         thickness: Math.max(0.1, toFiniteNumber(w.thickness, 1.5)),
         label: typeof w.label === "string" ? w.label : undefined,
         layerId: typeof w.layerId === "string" ? w.layerId : undefined,
+        startBind: normBind(w.startBind),
+        endBind: normBind(w.endBind),
+        startWireBind: normWireBind(w.startWireBind),
+        endWireBind: normWireBind(w.endWireBind),
       } satisfies ViewerWire;
     })
     .filter((w): w is NonNullable<typeof w> => w !== null);
@@ -146,18 +166,29 @@ export default async function ViewProjectPage({
   let doc:
     | (Record<string, unknown> & { name?: string; updatedAt?: Date })
     | null = null;
+  let libraryDoc: Record<string, unknown> | null = null;
   try {
     await connectDB();
-    doc = (await ProjectModel.findOne({ projectId: id }).lean()) as
-      | (Record<string, unknown> & { name?: string; updatedAt?: Date })
-      | null;
+    [doc, libraryDoc] = await Promise.all([
+      ProjectModel.findOne({ projectId: id }).lean() as Promise<
+        (Record<string, unknown> & { name?: string; updatedAt?: Date }) | null
+      >,
+      LibraryModel.findOne({ libraryId: "global" }).lean() as Promise<Record<string, unknown> | null>,
+    ]);
   } catch (err) {
     console.error("view project error:", err);
   }
 
   if (!doc) notFound();
 
-  const templates = normalizeTemplates(doc.templates);
+  // Prefer library templates (authoritative source with terminal labels).
+  // Fall back to project-embedded templates if library is unavailable.
+  const rawTemplates =
+    libraryDoc && Array.isArray(libraryDoc.templates) && libraryDoc.templates.length
+      ? libraryDoc.templates
+      : doc.templates;
+
+  const templates = normalizeTemplates(rawTemplates);
   const devices = normalizeDevices(doc.devices);
   const wires = normalizeWires(doc.wires);
   const labels = normalizeLabels(doc.labels);
@@ -172,9 +203,10 @@ export default async function ViewProjectPage({
       <header className="z-10 flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/90 px-3 py-2 backdrop-blur sm:px-4">
         <Link
           href="/"
-          className="rounded-md px-2 py-1 text-sm text-zinc-300 hover:bg-zinc-800"
+          aria-label="กลับ"
+          className="rounded-md p-2 text-zinc-300 hover:bg-zinc-800"
         >
-          ← กลับ
+          <ArrowLeft size={18} />
         </Link>
         <div className="min-w-0 flex-1 text-center">
           <h1 className="truncate text-sm font-semibold sm:text-base">{name}</h1>
@@ -184,12 +216,6 @@ export default async function ViewProjectPage({
             </p>
           ) : null}
         </div>
-        <Link
-          href="/studio"
-          className="rounded-md bg-violet-500 px-3 py-1 text-xs font-medium text-white hover:bg-violet-400 sm:text-sm"
-        >
-          Studio
-        </Link>
       </header>
       <div className="relative flex-1 overflow-hidden">
         <ProjectViewer

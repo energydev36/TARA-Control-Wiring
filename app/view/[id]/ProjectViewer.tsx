@@ -45,6 +45,10 @@ export type ViewerWire = {
   thickness: number;
   label?: string;
   layerId?: string;
+  startBind?: { deviceId: string; terminalId: string };
+  endBind?: { deviceId: string; terminalId: string };
+  startWireBind?: { wireId: string; t: number };
+  endWireBind?: { wireId: string; t: number };
 };
 
 export type ViewerLabel = {
@@ -140,6 +144,55 @@ function wireLength(points: number[]) {
     len += Math.hypot(points[i] - points[i - 2], points[i + 1] - points[i - 1]);
   }
   return len;
+}
+
+function terminalWorld(device: ViewerDevice, fx: number, fy: number) {
+  const rawX = fx * device.width;
+  const rawY = fy * device.height;
+  const lx = device.flipX ? device.width - rawX : rawX;
+  const ly = device.flipY ? device.height - rawY : rawY;
+  const r = (device.rotation * Math.PI) / 180;
+  return {
+    x: device.x + Math.cos(r) * lx - Math.sin(r) * ly,
+    y: device.y + Math.sin(r) * lx + Math.cos(r) * ly,
+  };
+}
+
+function distancePointToSegment(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+) {
+  const vx = bx - ax;
+  const vy = by - ay;
+  const wx = px - ax;
+  const wy = py - ay;
+  const vv = vx * vx + vy * vy;
+  const t = vv === 0 ? 0 : Math.max(0, Math.min(1, (wx * vx + wy * vy) / vv));
+  const cx = ax + vx * t;
+  const cy = ay + vy * t;
+  return Math.hypot(px - cx, py - cy);
+}
+
+function isPointOnWire(points: number[], x: number, y: number, tol = 3) {
+  for (let i = 0; i < points.length - 2; i += 2) {
+    if (
+      distancePointToSegment(
+        x,
+        y,
+        points[i],
+        points[i + 1],
+        points[i + 2],
+        points[i + 3]
+      ) <= tol
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export default function ProjectViewer({
@@ -419,6 +472,181 @@ export default function ProjectViewer({
       ? wireLayerMap.get(selectedWire.layerId) ?? null
       : null;
 
+  // ---------- Canvas name tag ----------
+  /** Tag floating above a selected device */
+  const deviceNameTag = useMemo(() => {
+    if (!selectedDevice) return null;
+    const name = selectedTemplate?.name;
+    if (!name) return null;
+    return {
+      x: selectedDevice.x + selectedDevice.width / 2,
+      y: selectedDevice.y,
+      text: name,
+    };
+  }, [selectedDevice, selectedTemplate]);
+
+  /** Terminal labels for a selected device */
+  const deviceTerminalTags = useMemo(() => {
+    if (!selectedDevice || !selectedTemplate) return [];
+    return selectedTemplate.terminals
+      .filter((t) => t.label?.trim() || t.id)
+      .map((t) => {
+        const p = terminalWorld(selectedDevice, t.fx, t.fy);
+        return {
+          key: `${selectedDevice.id}:term:${t.id}`,
+          x: p.x,
+          y: p.y,
+          text: t.label?.trim() || t.id,
+        };
+      });
+  }, [selectedDevice, selectedTemplate]);
+
+  /** Tag floating above the midpoint of a selected wire */
+  const wireNameTag = useMemo(() => {
+    if (!selectedWire) return null;
+    const pts = selectedWire.points;
+    if (pts.length < 4) return null;
+    // pick midpoint segment
+    const mid = Math.floor(pts.length / 4) * 2;
+    const x = pts[Math.min(mid, pts.length - 2)];
+    const y = pts[Math.min(mid + 1, pts.length - 1)];
+    const layerName = selectedWireLayer?.name ?? "สายไฟ";
+    // count wires in same layer to get ordinal (same logic as Studio)
+    const layerKey = selectedWire.layerId ?? "__none__";
+    let ordinal = 1;
+    for (const w of wires) {
+      if (w.id === selectedWire.id) break;
+      if ((w.layerId ?? "__none__") === layerKey) ordinal++;
+    }
+    const text = selectedWire.label?.trim() || `${layerName} ${ordinal}`;
+    return { x, y, text };
+  }, [selectedWire, selectedWireLayer, wires]);
+
+  const wireDisplayName = useCallback((target: ViewerWire) => {
+    const layerName = target.layerId
+      ? wireLayerMap.get(target.layerId)?.name ?? "สายไฟ"
+      : "สายไฟ";
+    const layerKey = target.layerId ?? "__none__";
+    let ordinal = 1;
+    for (const w of wires) {
+      if (w.id === target.id) break;
+      if ((w.layerId ?? "__none__") === layerKey) ordinal++;
+    }
+    return target.label?.trim() || `${layerName} ${ordinal}`;
+  }, [wireLayerMap, wires]);
+
+  const nearestTerminalLabelAt = useCallback((x: number, y: number) => {
+    const MAX_DIST = 40;
+    let best: { label: string; d: number } | null = null;
+    for (const d of devices) {
+      const tpl = templateMap.get(d.templateId);
+      if (!tpl) continue;
+      for (const t of tpl.terminals) {
+        const p = terminalWorld(d, t.fx, t.fy);
+        const dist = Math.hypot(p.x - x, p.y - y);
+        if (dist <= MAX_DIST && (!best || dist < best.d)) {
+          best = { label: t.label?.trim() || t.id, d: dist };
+        }
+      }
+    }
+    return best?.label ?? null;
+  }, [devices, templateMap]);
+
+  const resolveWireEndpointTerminalLabel = useCallback((wire: ViewerWire, endpoint: "start" | "end") => {
+    const bind = endpoint === "start" ? wire.startBind : wire.endBind;
+    if (bind) {
+      const dev = devices.find((d) => d.id === bind.deviceId);
+      const tpl = dev ? templateMap.get(dev.templateId) : null;
+      const term = tpl?.terminals.find((t) => t.id === bind.terminalId);
+      if (term) return term.label?.trim() || term.id;
+    }
+    const n = wire.points.length;
+    const x = endpoint === "start" ? wire.points[0] : wire.points[n - 2];
+    const y = endpoint === "start" ? wire.points[1] : wire.points[n - 1];
+    return nearestTerminalLabelAt(x, y);
+  }, [devices, templateMap, nearestTerminalLabelAt]);
+
+  /** Terminal labels at start/end of the selected wire */
+  const wireEndpointTags = useMemo(() => {
+    if (!selectedWire || selectedWire.points.length < 4) return [];
+    const pts = selectedWire.points;
+    const n = pts.length;
+    const tags: { key: string; x: number; y: number; text: string; kind: "endpoint" }[] = [];
+
+    const startLabel = resolveWireEndpointTerminalLabel(selectedWire, "start");
+    if (startLabel) {
+      tags.push({ key: `${selectedWire.id}:start`, x: pts[0], y: pts[1], text: startLabel, kind: "endpoint" });
+    }
+    const endLabel = resolveWireEndpointTerminalLabel(selectedWire, "end");
+    if (endLabel) {
+      tags.push({ key: `${selectedWire.id}:end`, x: pts[n - 2], y: pts[n - 1], text: endLabel, kind: "endpoint" });
+    }
+    return tags;
+  }, [selectedWire, resolveWireEndpointTerminalLabel]);
+
+  /** Labels for tap-wires (connecting wires) on the selected wire.
+   *  For each tap-wire, we render TWO endpoint labels:
+   *   - "near"  side: the tap point on the selected backbone — show terminal nearby
+   *   - "far"   side: the other endpoint of the tap wire — show its terminal */
+  const wireJumpTags = useMemo(() => {
+    if (!selectedWire) return [];
+    const tags: { key: string; x: number; y: number; text: string; kind: "endpoint" }[] = [];
+    const pushed = new Set<string>();
+    const pushTag = (key: string, x: number, y: number, text: string | null) => {
+      if (!text) return;
+      // Avoid stacking identical labels at the exact same coordinate.
+      const sig = `${Math.round(x)}:${Math.round(y)}:${text}`;
+      if (pushed.has(sig)) return;
+      pushed.add(sig);
+      tags.push({ key, x, y, text, kind: "endpoint" });
+    };
+
+    // Helper: resolve a wire's endpoint terminal label (bind first, geometric fallback).
+    const labelFor = (w: ViewerWire, endpoint: "start" | "end") =>
+      resolveWireEndpointTerminalLabel(w, endpoint);
+
+    // 1) Outgoing taps: selected wire's start/end binds to another wire.
+    if (selectedWire.startWireBind) {
+      const target = wires.find((w) => w.id === selectedWire.startWireBind!.wireId);
+      if (target && target.points.length >= 4) {
+        const p = computePointOnWire(target.points, selectedWire.startWireBind.t);
+        // near side label = the terminal at the OTHER end of the selected wire (its anchor)
+        pushTag(`${selectedWire.id}:near-start`, p.x, p.y, labelFor(selectedWire, "end"));
+      }
+    }
+    if (selectedWire.endWireBind) {
+      const target = wires.find((w) => w.id === selectedWire.endWireBind!.wireId);
+      if (target && target.points.length >= 4) {
+        const p = computePointOnWire(target.points, selectedWire.endWireBind.t);
+        pushTag(`${selectedWire.id}:near-end`, p.x, p.y, labelFor(selectedWire, "start"));
+      }
+    }
+
+    // 2) Incoming taps: other wires bind to the selected wire.
+    for (const w of wires) {
+      if (w.id === selectedWire.id) continue;
+
+      if (w.startWireBind?.wireId === selectedWire.id) {
+        const p = computePointOnWire(selectedWire.points, w.startWireBind.t);
+        // far-side (destination) terminal at the wire's "end"
+        pushTag(`tap:${w.id}:far`, w.points[w.points.length - 2], w.points[w.points.length - 1], labelFor(w, "end"));
+        // near-side (source on selected backbone) — show its label at the jump point
+        pushTag(`tap:${w.id}:near`, p.x, p.y, labelFor(w, "end") || labelFor(w, "start"));
+      }
+      if (w.endWireBind?.wireId === selectedWire.id) {
+        const p = computePointOnWire(selectedWire.points, w.endWireBind.t);
+        pushTag(`tap:${w.id}:far`, w.points[0], w.points[1], labelFor(w, "start"));
+        pushTag(`tap:${w.id}:near`, p.x, p.y, labelFor(w, "start") || labelFor(w, "end"));
+      }
+    }
+
+    // 3) Legacy geometric fallback intentionally removed — causes false positives
+    // when wires cross each other without being wire-bound. Only wireBind data
+    // (cases 1 & 2 above) reliably identifies actual tap connections.
+
+    return tags;
+  }, [selectedWire, wires, resolveWireEndpointTerminalLabel]);
+
   // Render
   const transform = `translate(${view.x} ${view.y}) scale(${view.scale})`;
 
@@ -451,50 +679,7 @@ export default function ProjectViewer({
         />
 
         <g transform={transform}>
-          {/* Wires under devices */}
-          {wires.map((w) => {
-            const isSelected =
-              selection?.kind === "wire" && selection.id === w.id;
-            const stroke = sqmmToStroke(w.thickness);
-            // Hit area: invisible wider stroke
-            return (
-              <g key={w.id}>
-                <polyline
-                  points={pointsToString(w.points)}
-                  fill="none"
-                  stroke="transparent"
-                  strokeWidth={Math.max(stroke + 18 / view.scale, 14 / view.scale)}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  style={{ cursor: "pointer" }}
-                  onPointerUp={() => onWireTap(w.id)}
-                />
-                <polyline
-                  points={pointsToString(w.points)}
-                  fill="none"
-                  stroke={w.color}
-                  strokeWidth={stroke}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  pointerEvents="none"
-                />
-                {isSelected ? (
-                  <polyline
-                    points={pointsToString(w.points)}
-                    fill="none"
-                    stroke="#a855f7"
-                    strokeWidth={stroke + 4 / view.scale}
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeOpacity={0.45}
-                    pointerEvents="none"
-                  />
-                ) : null}
-              </g>
-            );
-          })}
-
-          {/* Devices */}
+          {/* Devices — rendered first (bottom layer) */}
           {devices.map((d) => {
             const isSelected =
               selection?.kind === "device" && selection.id === d.id;
@@ -551,26 +736,144 @@ export default function ProjectViewer({
             );
           })}
 
+          {/* Wires — rendered on top of devices */}
+          {wires.map((w) => {
+            const isSelected =
+              selection?.kind === "wire" && selection.id === w.id;
+            const stroke = sqmmToStroke(w.thickness);
+            const d = pointsToRoundedPath(w.points);
+            // Hit area: invisible wider stroke
+            return (
+              <g key={w.id}>
+                <path
+                  d={d}
+                  fill="none"
+                  stroke="transparent"
+                  strokeWidth={Math.max(stroke + 18 / view.scale, 14 / view.scale)}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  style={{ cursor: "pointer" }}
+                  onPointerUp={() => onWireTap(w.id)}
+                />
+                <path
+                  d={d}
+                  fill="none"
+                  stroke={w.color}
+                  strokeWidth={stroke}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  pointerEvents="none"
+                />
+                {isSelected ? (
+                  <path
+                    d={d}
+                    fill="none"
+                    stroke="#a855f7"
+                    strokeWidth={stroke + 4 / view.scale}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeOpacity={0.45}
+                    pointerEvents="none"
+                  />
+                ) : null}
+              </g>
+            );
+          })}
+
           {/* Labels */}
-          {labels.map((l) => (
-            <g
-              key={l.id}
-              transform={`translate(${l.x} ${l.y}) rotate(${l.rotation ?? 0})`}
-              pointerEvents="none"
-            >
-              <text
-                x={0}
-                y={l.fontSize}
-                fontSize={l.fontSize}
-                fill={l.color}
-                style={{
-                  fontFamily:
-                    "var(--font-geist-sans), system-ui, -apple-system, sans-serif",
-                }}
+          {labels.map((l) => {
+            const approxW = l.text.length * l.fontSize * 0.6 + l.fontSize * 0.6;
+            const approxH = l.fontSize * 1.3;
+            const padX = l.fontSize * 0.3;
+            const padY = l.fontSize * 0.15;
+            return (
+              <g
+                key={l.id}
+                transform={`translate(${l.x} ${l.y}) rotate(${l.rotation ?? 0})`}
+                pointerEvents="none"
               >
-                {l.text}
-              </text>
-            </g>
+                <rect
+                  x={-padX}
+                  y={-padY}
+                  width={approxW}
+                  height={approxH}
+                  fill="white"
+                  rx={3}
+                  ry={3}
+                  opacity={0.92}
+                />
+                <text
+                  x={0}
+                  y={l.fontSize}
+                  fontSize={l.fontSize}
+                  fill={l.color}
+                  style={{
+                    fontFamily:
+                      "var(--font-geist-sans), system-ui, -apple-system, sans-serif",
+                  }}
+                >
+                  {l.text}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Device name tag on selection */}
+          {deviceNameTag ? (
+            <NameTag
+              x={deviceNameTag.x}
+              y={deviceNameTag.y}
+              text={deviceNameTag.text}
+              scale={view.scale}
+              kind="device"
+            />
+          ) : null}
+
+          {/* Wire name tag on selection */}
+          {wireNameTag ? (
+            <NameTag
+              x={wireNameTag.x}
+              y={wireNameTag.y}
+              text={wireNameTag.text}
+              scale={view.scale}
+              kind="wire"
+            />
+          ) : null}
+
+          {/* Wire endpoint terminal tags */}
+          {wireEndpointTags.map((tag) => (
+            <NameTag
+              key={tag.key}
+              x={tag.x}
+              y={tag.y}
+              text={tag.text}
+              scale={view.scale}
+              kind="endpoint"
+            />
+          ))}
+
+          {/* Wire jump-point tags */}
+          {wireJumpTags.map((tag) => (
+            <NameTag
+              key={tag.key}
+              x={tag.x}
+              y={tag.y}
+              text={tag.text}
+              scale={view.scale}
+              kind="endpoint"
+            />
+          ))}
+
+          {/* Device terminal labels on selection */}
+          {deviceTerminalTags.map((tag) => (
+            <NameTag
+              key={tag.key}
+              x={tag.x}
+              y={tag.y}
+              text={tag.text}
+              scale={view.scale}
+              kind="endpoint"
+            />
           ))}
         </g>
       </svg>
@@ -630,98 +933,107 @@ export default function ProjectViewer({
         </div>
       </div>
 
-      {/* Info panel */}
-      {selection ? (
-        <div className="pointer-events-auto absolute inset-x-0 bottom-0 z-20 mx-auto max-w-xl rounded-t-2xl border-t border-zinc-700 bg-zinc-900/95 px-4 py-3 text-zinc-100 shadow-2xl backdrop-blur sm:inset-x-4 sm:bottom-4 sm:rounded-2xl sm:border">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-[10px] uppercase tracking-widest text-violet-300">
-                {selection.kind === "device" ? "อุปกรณ์" : "สายไฟ"}
-              </p>
-              {selectedDevice ? (
-                <h2 className="mt-0.5 truncate text-base font-semibold">
-                  {selectedTemplate?.name ?? "Untitled"}
-                </h2>
-              ) : null}
-              {selectedWire ? (
-                <h2 className="mt-0.5 truncate text-base font-semibold">
-                  {selectedWire.label?.trim()
-                    ? selectedWire.label
-                    : selectedWireLayer?.name ?? "สายไฟ"}
-                </h2>
-              ) : null}
-            </div>
-            <button
-              type="button"
-              aria-label="close"
-              onClick={() => setSelection(null)}
-              className="rounded-md px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
-            >
-              ✕
-            </button>
-          </div>
-
-          <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
-            {selectedDevice ? (
-              <>
-                {selectedTemplate?.category ? (
-                  <>
-                    <dt className="text-zinc-400">หมวดหมู่</dt>
-                    <dd className="truncate">{selectedTemplate.category}</dd>
-                  </>
-                ) : null}
-                <dt className="text-zinc-400">ตำแหน่ง</dt>
-                <dd>
-                  ({Math.round(selectedDevice.x)},{" "}
-                  {Math.round(selectedDevice.y)})
-                </dd>
-                <dt className="text-zinc-400">ขนาด</dt>
-                <dd>
-                  {Math.round(selectedDevice.width)} ×{" "}
-                  {Math.round(selectedDevice.height)} px
-                </dd>
-                <dt className="text-zinc-400">การหมุน</dt>
-                <dd>{Math.round(selectedDevice.rotation)}°</dd>
-                {selectedTemplate?.terminals?.length ? (
-                  <>
-                    <dt className="text-zinc-400">เทอร์มินัล</dt>
-                    <dd>{selectedTemplate.terminals.length} จุด</dd>
-                  </>
-                ) : null}
-              </>
-            ) : null}
-
-            {selectedWire ? (
-              <>
-                <dt className="text-zinc-400">เลเยอร์</dt>
-                <dd className="truncate">
-                  {selectedWireLayer?.name ?? "ไม่ระบุ"}
-                </dd>
-                <dt className="text-zinc-400">สี</dt>
-                <dd className="flex items-center gap-1.5">
-                  <span
-                    className="inline-block h-3 w-3 rounded-full border border-zinc-600"
-                    style={{ background: selectedWire.color }}
-                  />
-                  <span className="truncate">{selectedWire.color}</span>
-                </dd>
-                <dt className="text-zinc-400">ขนาดสาย</dt>
-                <dd>{selectedWire.thickness} sq.mm</dd>
-                <dt className="text-zinc-400">ความยาว</dt>
-                <dd>{Math.round(wireLength(selectedWire.points))} px</dd>
-                <dt className="text-zinc-400">จำนวนจุด</dt>
-                <dd>{selectedWire.points.length / 2}</dd>
-              </>
-            ) : null}
-          </dl>
-        </div>
-      ) : (
+      {/* Info panel removed */}
+      {!selection ? (
         <div className="pointer-events-none absolute left-1/2 top-3 -translate-x-1/2 rounded-full bg-zinc-900/70 px-3 py-1 text-[11px] text-zinc-300 backdrop-blur">
           เลื่อนด้วยนิ้ว · บีบเพื่อซูม · แตะอุปกรณ์/สายไฟเพื่อดู
         </div>
-      )}
+      ) : null}
     </div>
   );
+}
+
+/** Floating name label — matches the style of Studio's selectedDeviceTags / selectedWireNameTags */
+function NameTag({
+  x,
+  y,
+  text,
+  scale,
+  kind,
+}: {
+  x: number;
+  y: number;
+  text: string;
+  scale: number;
+  kind: "device" | "wire" | "endpoint";
+}) {
+  const fontSize = (kind === "device" ? 18 : kind === "endpoint" ? 13 : 15) / scale;
+  const padding = (kind === "device" ? 4 : 3) / scale;
+  const approxW = Math.max(16 / scale, text.length * fontSize * 0.62 + padding * 2);
+  const approxH = fontSize + padding * 2;
+  const rx = 2 / scale;
+
+  // device: above device top; wire/endpoint: centred vertically then pushed up slightly
+  const offsetY = kind === "device"
+    ? approxH + 2 / scale
+    : approxH / 2 + (kind === "endpoint" ? 14 / scale : 0);
+  const rectX = x - approxW / 2;
+  const rectY = y - offsetY;
+
+  const fill = "#ffffff";
+  const stroke = "#0f172a";
+  const textFill = "#0f172a";
+
+  return (
+    <g pointerEvents="none">
+      <rect
+        x={rectX}
+        y={rectY}
+        width={approxW}
+        height={approxH}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={1 / scale}
+        rx={rx}
+        ry={rx}
+        opacity={0.93}
+      />
+      <text
+        x={x}
+        y={rectY + padding + fontSize * 0.85}
+        textAnchor="middle"
+        fontSize={fontSize}
+        fill={textFill}
+        style={{ fontFamily: "var(--font-geist-sans), system-ui, -apple-system, sans-serif" }}
+      >
+        {text}
+      </text>
+    </g>
+  );
+}
+
+/** Get point on polyline by normalized length parameter t (0..1). */
+function computePointOnWire(points: number[], t: number): { x: number; y: number } {
+  if (points.length < 4) {
+    return { x: points[0] ?? 0, y: points[1] ?? 0 };
+  }
+  const clamped = Math.max(0, Math.min(1, t));
+  const segs: { x1: number; y1: number; x2: number; y2: number; len: number }[] = [];
+  let total = 0;
+  for (let i = 0; i < points.length - 2; i += 2) {
+    const x1 = points[i];
+    const y1 = points[i + 1];
+    const x2 = points[i + 2];
+    const y2 = points[i + 3];
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    segs.push({ x1, y1, x2, y2, len });
+    total += len;
+  }
+  if (total <= 0) return { x: points[0], y: points[1] };
+
+  let target = total * clamped;
+  for (const s of segs) {
+    if (target <= s.len) {
+      const r = s.len === 0 ? 0 : target / s.len;
+      return {
+        x: s.x1 + (s.x2 - s.x1) * r,
+        y: s.y1 + (s.y2 - s.y1) * r,
+      };
+    }
+    target -= s.len;
+  }
+  const last = segs[segs.length - 1];
+  return { x: last.x2, y: last.y2 };
 }
 
 function pointsToString(pts: number[]) {
@@ -730,4 +1042,38 @@ function pointsToString(pts: number[]) {
     s += (i ? " " : "") + pts[i] + "," + pts[i + 1];
   }
   return s;
+}
+
+/** Convert flat [x,y,x,y,...] into an SVG path with quadratic-bezier rounded corners.
+ *  `r` is the corner radius in canvas units. */
+function pointsToRoundedPath(pts: number[], r = 12): string {
+  const n = pts.length / 2;
+  if (n < 2) return "";
+  if (n === 2) return `M${pts[0]},${pts[1]} L${pts[2]},${pts[3]}`;
+
+  let d = "";
+  for (let i = 0; i < n; i++) {
+    const x = pts[i * 2];
+    const y = pts[i * 2 + 1];
+    if (i === 0) {
+      d += `M${x},${y}`;
+    } else if (i === n - 1) {
+      d += ` L${x},${y}`;
+    } else {
+      // previous and next points
+      const px = pts[(i - 1) * 2],  py = pts[(i - 1) * 2 + 1];
+      const nx = pts[(i + 1) * 2],  ny = pts[(i + 1) * 2 + 1];
+      const d1 = Math.hypot(x - px, y - py);
+      const d2 = Math.hypot(nx - x, ny - y);
+      const cr = Math.min(r, d1 / 2, d2 / 2);
+      // point along incoming segment, cr before corner
+      const ax = x - (cr / d1) * (x - px);
+      const ay = y - (cr / d1) * (y - py);
+      // point along outgoing segment, cr after corner
+      const bx = x + (cr / d2) * (nx - x);
+      const by = y + (cr / d2) * (ny - y);
+      d += ` L${ax},${ay} Q${x},${y} ${bx},${by}`;
+    }
+  }
+  return d;
 }
