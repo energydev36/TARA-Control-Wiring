@@ -47,7 +47,7 @@ function normalizeTemplates(input: unknown): ViewerTemplate[] {
         terminals,
       } satisfies ViewerTemplate;
     })
-    .filter((t): t is ViewerTemplate => t !== null);
+    .filter((t): t is NonNullable<typeof t> => t !== null);
 }
 
 function normalizeDevices(input: unknown): ViewerDevice[] {
@@ -70,7 +70,7 @@ function normalizeDevices(input: unknown): ViewerDevice[] {
         flipY: Boolean(d.flipY),
       } satisfies ViewerDevice;
     })
-    .filter((d): d is ViewerDevice => d !== null);
+    .filter((d): d is NonNullable<typeof d> => d !== null);
 }
 
 function normalizeWires(input: unknown): ViewerWire[] {
@@ -94,7 +94,7 @@ function normalizeWires(input: unknown): ViewerWire[] {
         layerId: typeof w.layerId === "string" ? w.layerId : undefined,
       } satisfies ViewerWire;
     })
-    .filter((w): w is ViewerWire => w !== null);
+    .filter((w): w is NonNullable<typeof w> => w !== null);
 }
 
 function normalizeLabels(input: unknown): ViewerLabel[] {
@@ -114,7 +114,7 @@ function normalizeLabels(input: unknown): ViewerLabel[] {
         rotation: toFiniteNumber(l.rotation, 0),
       } satisfies ViewerLabel;
     })
-    .filter((l): l is ViewerLabel => l !== null);
+    .filter((l): l is NonNullable<typeof l> => l !== null);
 }
 
 function normalizeWireLayers(input: unknown): ViewerWireLayer[] {
@@ -133,7 +133,7 @@ function normalizeWireLayers(input: unknown): ViewerWireLayer[] {
             : undefined,
       } satisfies ViewerWireLayer;
     })
-    .filter((l): l is ViewerWireLayer => l !== null);
+    .filter((l): l is NonNullable<typeof l> => l !== null);
 }
 
 export default async function ViewProjectPage({
