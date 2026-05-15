@@ -217,6 +217,9 @@ type State = {
   setField: <K extends keyof State>(key: K, value: State[K]) => void;
   dbStatus: "idle" | "saving" | "saved" | "error";
   setDbStatus: (s: "idle" | "saving" | "saved" | "error") => void;
+  /** Unix-ms timestamp of the last time canvas data was mutated locally (written to localStorage). */
+  localSavedAt: number;
+  setLocalSavedAt: (t: number) => void;
   // Project management
   currentProjectId: string;
   currentProjectName: string;
@@ -554,6 +557,8 @@ export const useEditorStore = create<State>()(
   },
   dbStatus: "idle",
   setDbStatus: (s) => set({ dbStatus: s }),
+  localSavedAt: 0,
+  setLocalSavedAt: (t) => set({ localSavedAt: t }),
   currentProjectId: "default",
   currentProjectName: "Untitled",
   setCurrentProject: (id, name) => {
@@ -674,6 +679,7 @@ export const useEditorStore = create<State>()(
         exportFrame: s.exportFrame,
         currentProjectId: s.currentProjectId,
         currentProjectName: s.currentProjectName,
+        localSavedAt: s.localSavedAt,
       }),
     }
   )

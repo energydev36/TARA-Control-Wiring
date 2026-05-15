@@ -10,6 +10,11 @@ const DEBOUNCE_MS = 1500;
  * - On mount: loads global library (templates + categories) then loads current project.
  * - Library changes auto-save to /api/library (shared across all projects).
  * - Project changes (devices + wires) auto-save to /api/project.
+ *
+ * Race-condition protection:
+ * - `localSavedAt` (persisted in localStorage) tracks when canvas was last mutated locally.
+ * - On mount, DB data is only applied if its `updatedAt` is newer than `localSavedAt`.
+ * - A `beforeunload` handler flushes the debounce immediately so DB is up-to-date on refresh.
  */
 export function DbSync() {
   const initialized = useRef(false);
@@ -67,6 +72,38 @@ export function DbSync() {
     loadProject(store.currentProjectId)
       .then((data) => {
         if (!data) return;
+
+        // ── Timestamp guard ──────────────────────────────────────────────
+        // localSavedAt is persisted in localStorage and updated every time
+        // canvas data changes locally. If localSavedAt is newer than the DB's
+        // updatedAt, the DB has stale data — skip the overwrite and push the
+        // localStorage version to DB instead.
+        const localSavedAt = useEditorStore.getState().localSavedAt ?? 0;
+        const dbUpdatedAt = data.updatedAt ? new Date(data.updatedAt).getTime() : 0;
+
+        if (localSavedAt > dbUpdatedAt + 2000) {
+          // localStorage is newer — skip DB overwrite, persist local data to DB
+          console.info("DbSync: localStorage is newer than DB, skipping overwrite and pushing local data to DB.");
+          const s = useEditorStore.getState();
+          fetch("/api/project", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: s.currentProjectId,
+              name: s.currentProjectName,
+              devices: s.devices,
+              wires: s.wires,
+              labels: s.labels,
+              wireColor: s.wireColor,
+              wireThickness: s.wireThickness,
+              wireJumps: s.wireJumps,
+              wireLayers: s.wireLayers,
+              activeWireLayerId: s.activeWireLayerId,
+            }),
+          }).catch((e) => console.warn("DbSync push-local error:", e));
+          return;
+        }
+
         const patch: Record<string, unknown> = {
           devices: data.devices ?? [],
           wires: data.wires ?? [],
@@ -142,43 +179,80 @@ export function DbSync() {
         pn: s.currentProjectName,
       });
 
+    const doSave = () => {
+      const { devices, wires, labels, wireColor, wireThickness, wireJumps,
+        wireLayers, activeWireLayerId,
+        currentProjectId, currentProjectName } = useEditorStore.getState();
+      fetch("/api/project", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: currentProjectId,
+          name: currentProjectName,
+          devices,
+          wires,
+          labels,
+          wireColor,
+          wireThickness,
+          wireJumps,
+          wireLayers,
+          activeWireLayerId,
+        }),
+      })
+        .then((r) => useEditorStore.getState().setDbStatus(r.ok ? "saved" : "error"))
+        .catch(() => useEditorStore.getState().setDbStatus("error"));
+    };
+
     const unsub = useEditorStore.subscribe((state) => {
       if (isLoading.current) return;
       const fp = getFp(state);
       if (fp === prevFp) return;
       prevFp = fp;
 
+      // Update localSavedAt immediately so localStorage is timestamped
+      useEditorStore.getState().setLocalSavedAt(Date.now());
+
       if (projectTimer.current) clearTimeout(projectTimer.current);
       useEditorStore.getState().setDbStatus("saving");
 
-      projectTimer.current = setTimeout(() => {
-        const { devices, wires, labels, wireColor, wireThickness, wireJumps,
-          wireLayers, activeWireLayerId,
-          currentProjectId, currentProjectName } = useEditorStore.getState();
-        fetch("/api/project", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            projectId: currentProjectId,
-            name: currentProjectName,
-            devices,
-            wires,
-            labels,
-            wireColor,
-            wireThickness,
-            wireJumps,
-            wireLayers,
-            activeWireLayerId,
-          }),
-        })
-          .then((r) => useEditorStore.getState().setDbStatus(r.ok ? "saved" : "error"))
-          .catch(() => useEditorStore.getState().setDbStatus("error"));
-      }, DEBOUNCE_MS);
+      projectTimer.current = setTimeout(doSave, DEBOUNCE_MS);
     });
+
+    // ── Flush save immediately before page unloads ─────────────────────
+    // This prevents data loss when the user refreshes before the debounce fires.
+    const handleBeforeUnload = () => {
+      if (projectTimer.current) {
+        clearTimeout(projectTimer.current);
+        projectTimer.current = null;
+      }
+      const { devices, wires, labels, wireColor, wireThickness, wireJumps,
+        wireLayers, activeWireLayerId,
+        currentProjectId, currentProjectName } = useEditorStore.getState();
+      const payload = JSON.stringify({
+        projectId: currentProjectId,
+        name: currentProjectName,
+        devices,
+        wires,
+        labels,
+        wireColor,
+        wireThickness,
+        wireJumps,
+        wireLayers,
+        activeWireLayerId,
+      });
+      // sendBeacon is guaranteed to complete even after page unload
+      if (typeof navigator !== "undefined" && navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: "application/json" });
+        navigator.sendBeacon("/api/project", blob);
+      }
+    };
+
+    window.addEventListener("beforeunload", handleBeforeUnload);
 
     return () => {
       unsub();
       if (projectTimer.current) clearTimeout(projectTimer.current);
+      window.removeEventListener("beforeunload", handleBeforeUnload);
     };
   }, []);
 

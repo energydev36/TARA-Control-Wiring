@@ -2,6 +2,8 @@ import Link from "next/link";
 import { connectDB } from "@/lib/mongodb";
 import { ProjectModel } from "@/lib/models/Project";
 
+export const dynamic = "force-dynamic";
+
 type FeaturedProject = {
   projectId?: string;
   title: string;
