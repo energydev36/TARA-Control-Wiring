@@ -1586,6 +1586,9 @@ export default function DeviceCanvas() {
 
   const [size, setSize] = useState({ w: 800, h: 600 });
   const [view, setView] = useState({ x: 0, y: 0, scale: 1 });
+  /** rAF-coalesce wheel zooming so rapid trackpad events trigger at most one re-render per frame. */
+  const wheelRafRef = useRef<number | null>(null);
+  const wheelPendingRef = useRef<{ x: number; y: number; scale: number } | null>(null);
   const [selBox, setSelBox] = useState<{
     x: number;
     y: number;
@@ -1646,6 +1649,9 @@ export default function DeviceCanvas() {
   } = useEditorStore();
   const isViewOnly = interactionMode === "view";
   const prevToolRef = useRef(activeTool);
+
+  /** O(1) membership check for selection — much faster than .includes when many items are selected. */
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
 
   // Resize observer
   useEffect(() => {
@@ -1883,25 +1889,39 @@ export default function DeviceCanvas() {
   const onWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
     e.evt.preventDefault();
     const scaleBy = 1.08;
-    const oldScale = view.scale;
     const stage = stageRef.current;
     if (!stage) return;
     const p = stage.getPointerPosition();
     if (!p) return;
+
+    // Use the latest pending view (if any) so multi-step wheel deltas accumulate
+    // across the same animation frame instead of being dropped.
+    const base = wheelPendingRef.current ?? view;
+    const oldScale = base.scale;
     const mousePointTo = {
-      x: (p.x - view.x) / oldScale,
-      y: (p.y - view.y) / oldScale,
+      x: (p.x - base.x) / oldScale,
+      y: (p.y - base.y) / oldScale,
     };
     const direction = e.evt.deltaY > 0 ? -1 : 1;
     const newScale = Math.min(
       4,
       Math.max(0.2, direction > 0 ? oldScale * scaleBy : oldScale / scaleBy)
     );
-    setView({
+    const next = {
       scale: newScale,
       x: p.x - mousePointTo.x * newScale,
       y: p.y - mousePointTo.y * newScale,
-    });
+    };
+    wheelPendingRef.current = next;
+
+    if (wheelRafRef.current == null) {
+      wheelRafRef.current = requestAnimationFrame(() => {
+        wheelRafRef.current = null;
+        const pending = wheelPendingRef.current;
+        wheelPendingRef.current = null;
+        if (pending) setView(pending);
+      });
+    }
   };
 
   const zoomAtCenter = (nextScale: number) => {
@@ -2537,7 +2557,10 @@ export default function DeviceCanvas() {
   }, [selectedIds, devices, templates, view.scale]);
 
   const selectedHasWire = useMemo(
-    () => selectedIds.some((id) => wires.some((w) => w.id === id)),
+    () => {
+      const wireIds = new Set(wires.map((w) => w.id));
+      return selectedIds.some((id) => wireIds.has(id));
+    },
     [selectedIds, wires]
   );
 
@@ -2557,6 +2580,39 @@ export default function DeviceCanvas() {
     return out;
   }, [selectedIds, renderedWires, view.scale]);
   const rotationSnaps = useMemo(() => Array.from({ length: 36 }, (_, i) => i * 10), []);
+
+  /**
+   * Pre-compute per-wire visual extras (`sharpCorners` from tap-bound wires + optional
+   * `jumpPoints`). Doing this once per render — instead of re-running the O(W²) inner
+   * scan inside renderedWires.map — keeps zoom/pan smooth when the canvas has many
+   * wires or many objects are selected.
+   */
+  const wireExtras = useMemo(() => {
+    const map = new Map<string, { sharpCorners: { x: number; y: number }[]; jumpPoints?: { x: number; y: number }[] }>();
+    // Initialise so every wire has an entry.
+    for (const w of renderedWires) map.set(w.id, { sharpCorners: [] });
+    // Single pass: each tap-bound contributes to its target's sharpCorners list.
+    for (const ow of renderedWires) {
+      if (ow.startWireBind) {
+        const target = renderedWires.find((t) => t.id === ow.startWireBind!.wireId);
+        if (target) {
+          map.get(target.id)!.sharpCorners.push(computePointOnWire(target.points, ow.startWireBind.t));
+        }
+      }
+      if (ow.endWireBind) {
+        const target = renderedWires.find((t) => t.id === ow.endWireBind!.wireId);
+        if (target) {
+          map.get(target.id)!.sharpCorners.push(computePointOnWire(target.points, ow.endWireBind.t));
+        }
+      }
+    }
+    if (wireJumps) {
+      renderedWires.forEach((w, wi) => {
+        map.get(w.id)!.jumpPoints = computeJumpPoints(w, wi, renderedWires);
+      });
+    }
+    return map;
+  }, [renderedWires, wireJumps]);
 
   const getImageRatio = async (src: string): Promise<number> => {
     if (imageRatioCacheRef.current[src]) return imageRatioCacheRef.current[src];
@@ -2699,7 +2755,7 @@ export default function DeviceCanvas() {
             <DeviceNode
               key={d.id}
               device={d}
-              selected={selectedIds.includes(d.id)}
+              selected={selectedSet.has(d.id)}
               onSelect={(e) => {
                 if (isViewOnly) {
                   e.cancelBubble = true;
@@ -2721,7 +2777,7 @@ export default function DeviceCanvas() {
                 }
                 e.cancelBubble = true;
                 if (activeTool !== "select") return;
-                if (!e.evt.shiftKey && selectedIds.length > 1 && selectedIds.includes(d.id)) {
+                if (!e.evt.shiftKey && selectedIds.length > 1 && selectedSet.has(d.id)) {
                   // keep current multi-selection when clicking one of selected items
                   return;
                 }
@@ -2742,7 +2798,7 @@ export default function DeviceCanvas() {
                   dragOnly &&
                   activeTool === "select" &&
                   selectedIds.length > 1 &&
-                  selectedIds.includes(d.id);
+                  selectedSet.has(d.id);
 
                 if (dragOnly) {
                   if (movingMulti) {
@@ -2822,7 +2878,7 @@ export default function DeviceCanvas() {
               label={l}
               activeTool={activeTool}
               canEdit={!isViewOnly}
-              selected={selectedIds.includes(l.id)}
+              selected={selectedSet.has(l.id)}
               onSelect={(e) => {
                 if (isViewOnly) {
                   e.cancelBubble = true;
@@ -2836,7 +2892,7 @@ export default function DeviceCanvas() {
                   return;
                 }
                 e.cancelBubble = true;
-                if (!e.evt.shiftKey && selectedIds.length > 1 && selectedIds.includes(l.id)) {
+                if (!e.evt.shiftKey && selectedIds.length > 1 && selectedSet.has(l.id)) {
                   return;
                 }
                 if (e.evt.shiftKey) toggleSelected(l.id);
@@ -2854,24 +2910,15 @@ export default function DeviceCanvas() {
 
           {/* Wires อยู่เหนือรูปอุปกรณ์ */}
           {/* Wires อยู่เหนือรูปอุปกรณ์ */}
-          {renderedWires.map((w, wi) => {
-            const sharpCorners = renderedWires.flatMap((ow) => {
-              if (ow.id === w.id) return [] as { x: number; y: number }[];
-              const out: { x: number; y: number }[] = [];
-              if (ow.startWireBind?.wireId === w.id) {
-                out.push(computePointOnWire(w.points, ow.startWireBind.t));
-              }
-              if (ow.endWireBind?.wireId === w.id) {
-                out.push(computePointOnWire(w.points, ow.endWireBind.t));
-              }
-              return out;
-            });
+          {renderedWires.map((w) => {
+            const extras = wireExtras.get(w.id);
+            const sharpCorners = extras?.sharpCorners ?? [];
             return (
               <WireNode
                 key={w.id}
                 wire={w}
-                selected={selectedIds.includes(w.id)}
-                jumpPoints={wireJumps ? computeJumpPoints(w, wi, renderedWires) : undefined}
+                selected={selectedSet.has(w.id)}
+                jumpPoints={extras?.jumpPoints}
                 sharpCorners={sharpCorners}
                 onTransformCommit={(node) => {
                   const tx = node.getTransform();
@@ -2902,7 +2949,7 @@ export default function DeviceCanvas() {
                   }
                   e.cancelBubble = true;
                   if (activeTool !== "select") return;
-                  if (!e.evt.shiftKey && selectedIds.length > 1 && selectedIds.includes(w.id)) {
+                  if (!e.evt.shiftKey && selectedIds.length > 1 && selectedSet.has(w.id)) {
                     return;
                   }
                   if (e.evt.shiftKey) toggleSelected(w.id);
@@ -3131,7 +3178,7 @@ export default function DeviceCanvas() {
           {/* Wire waypoint handles (only when selected + select tool) */}
           {!isViewOnly && activeTool === "select" &&
             renderedWires
-              .filter((w) => selectedIds.includes(w.id))
+              .filter((w) => selectedSet.has(w.id))
               .map((w) => (
                 <WireSegmentHandles
                   key={`h:${w.id}`}
@@ -3617,7 +3664,7 @@ export default function DeviceCanvas() {
       {/* Alignment toolbar for multi-selected devices */}
       {!isViewOnly && (
         <AlignmentToolbar
-          devices={devices.filter((d) => selectedIds.includes(d.id))}
+          devices={devices.filter((d) => selectedSet.has(d.id))}
           onApply={(updates) => {
             const { updateWire, templates: tpls } = useEditorStore.getState();
             const prevById = new Map(useEditorStore.getState().devices.map((d) => [d.id, d] as const));
