@@ -67,6 +67,8 @@ export type Wire = {
   color: string;
   thickness: number;
   label?: string;
+  /** Wire layer ID (e.g. main-power, control). undefined = default/legacy */
+  layerId?: string;
   /** Terminal the wire starts from */
   startBind?: { deviceId: string; terminalId: string };
   /** Terminal the wire ends at */
@@ -78,6 +80,19 @@ export type Wire = {
   /** Routing direction: false = H-first (default), true = V-first */
   vFirst?: boolean;
 };
+
+export type WireLayer = {
+  id: string;
+  name: string;
+  /** Default wire cross-section in sq.mm for wires in this layer */
+  thickness?: number;
+};
+
+/** Built-in default wire layers (used when project has none yet). */
+export const DEFAULT_WIRE_LAYERS: WireLayer[] = [
+  { id: "main-power", name: "เมนพาวเวอร์", thickness: 4 },
+  { id: "control", name: "คอนโทรล", thickness: 1.5 },
+];
 
 export type CanvasLabel = {
   id: string;
@@ -132,6 +147,19 @@ type State = {
   wireThickness: number;
   /** Committed points of the wire being drawn (orthogonal path) */
   draftFixed: number[] | null;
+
+  /** Wire layers (project-scoped) */
+  wireLayers: WireLayer[];
+  /** Active layer for newly-drawn wires */
+  activeWireLayerId: string | null;
+
+  // Wire layers
+  addWireLayer: (name: string) => string;
+  renameWireLayer: (id: string, name: string) => void;
+  updateWireLayer: (id: string, patch: Partial<Omit<WireLayer, "id">>) => void;
+  removeWireLayer: (id: string) => void;
+  setActiveWireLayer: (id: string | null) => void;
+  moveWiresToLayer: (wireIds: string[], layerId: string | null) => void;
 
   // Templates
   addTemplate: (t: Omit<DeviceTemplate, "terminals">) => void;
@@ -215,6 +243,14 @@ type State = {
   resetHistory: () => void;
 };
 
+/**
+ * Convert a cable cross-section area (sq.mm) to a visual stroke-width in canvas pixels.
+ * Uses a square-root scale so large cables remain visually distinct without being huge.
+ */
+export function sqmmToStroke(sqmm: number): number {
+  return Math.max(1, 1 + Math.sqrt(Math.max(0, sqmm)) * 1.2);
+}
+
 export const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -265,10 +301,69 @@ export const useEditorStore = create<State>()(
   selectedIds: [],
 
   wireColor: "#dc2626",
-  wireThickness: 2,
+  wireThickness: 1.5,
   draftFixed: null,
   textFontSize: 18,
   textColor: "#111827",
+
+  wireLayers: [...DEFAULT_WIRE_LAYERS],
+  activeWireLayerId: DEFAULT_WIRE_LAYERS[0]?.id ?? null,
+
+  addWireLayer: (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return "";
+    const id = uid();
+    set((s) => ({
+      wireLayers: [...s.wireLayers, { id, name: trimmed }],
+      activeWireLayerId: s.activeWireLayerId ?? id,
+    }));
+    return id;
+  },
+  renameWireLayer: (id, name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    set((s) => ({
+      wireLayers: s.wireLayers.map((l) => (l.id === id ? { ...l, name: trimmed } : l)),
+    }));
+  },
+  updateWireLayer: (id, patch) => {
+    set((s) => ({
+      wireLayers: s.wireLayers.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+      // propagate new thickness to all wires in this layer
+      wires: typeof patch.thickness === "number"
+        ? s.wires.map((w) => (w.layerId === id ? { ...w, thickness: patch.thickness as number } : w))
+        : s.wires,
+    }));
+  },
+  removeWireLayer: (id) => {
+    snapshot();
+    set((s) => {
+      const remaining = s.wireLayers.filter((l) => l.id !== id);
+      const fallback = remaining[0]?.id ?? null;
+      return {
+        wireLayers: remaining,
+        wires: s.wires.map((w) => (w.layerId === id ? { ...w, layerId: fallback ?? undefined } : w)),
+        activeWireLayerId: s.activeWireLayerId === id ? fallback : s.activeWireLayerId,
+      };
+    });
+  },
+  setActiveWireLayer: (id) => set({ activeWireLayerId: id }),
+  moveWiresToLayer: (wireIds, layerId) => {
+    if (wireIds.length === 0) return;
+    snapshot();
+    const ids = new Set(wireIds);
+    set((s) => {
+      const layer = layerId ? s.wireLayers.find((l) => l.id === layerId) : undefined;
+      return {
+        wires: s.wires.map((w) => {
+          if (!ids.has(w.id)) return w;
+          const updated: typeof w = { ...w, layerId: layerId ?? undefined };
+          if (layer?.thickness !== undefined) updated.thickness = layer.thickness;
+          return updated;
+        }),
+      };
+    });
+  },
 
   addTemplate: (t) =>
     set((s) => ({ templates: [...s.templates, { ...t, terminals: [] }] })),
@@ -373,19 +468,22 @@ export const useEditorStore = create<State>()(
   appendDraftPoints: (pts) =>
     set((s) => (s.draftFixed ? { draftFixed: [...s.draftFixed, ...pts] } : s)),
   finishDraftWire: (startBind?, endBind?, vFirst?) => {
-    const { draftFixed, wireColor, wireThickness } = get();
+    const { draftFixed, wireColor, wireThickness, activeWireLayerId, wireLayers } = get();
     if (!draftFixed || draftFixed.length < 4) { set({ draftFixed: null }); return; }
     // Merge consecutive collinear points (a-b-c on the same H or V line)
     const cleaned = mergeCollinearStore(draftFixed);
     if (cleaned.length < 4) { set({ draftFixed: null }); return; }
+    const activeLayer = activeWireLayerId ? wireLayers.find((l) => l.id === activeWireLayerId) : undefined;
+    const thickness = activeLayer?.thickness ?? wireThickness;
     const wire: Wire = {
       id: uid(),
       points: cleaned,
       color: wireColor,
-      thickness: wireThickness,
+      thickness,
       startBind,
       endBind,
       vFirst,
+      layerId: activeWireLayerId ?? undefined,
     };
     snapshot();
     set((s) => ({ wires: [...s.wires, wire], draftFixed: null }));
@@ -571,6 +669,8 @@ export const useEditorStore = create<State>()(
         wireColor: s.wireColor,
         wireThickness: s.wireThickness,
         wireJumps: s.wireJumps,
+        wireLayers: s.wireLayers,
+        activeWireLayerId: s.activeWireLayerId,
         exportFrame: s.exportFrame,
         currentProjectId: s.currentProjectId,
         currentProjectName: s.currentProjectName,

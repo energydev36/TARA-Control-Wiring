@@ -55,7 +55,6 @@ export default function Sidebar() {
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set());
   const [showProjectManager, setShowProjectManager] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-
   const {
     templates,
     addTemplate,
@@ -95,6 +94,9 @@ export default function Sidebar() {
     removeCategory,
     currentProjectName,
     setExportPreview,
+    wireLayers,
+    activeWireLayerId,
+    setActiveWireLayer,
   } = useEditorStore();
 
   const pastLen = useEditorStore((s) => s.past.length);
@@ -259,6 +261,31 @@ export default function Sidebar() {
           <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">
             Wire
           </h2>
+          {/* Layer selector */}
+          {wireLayers.length > 0 && (
+            <div className="mb-3">
+              <p className="mb-1 text-[10px] font-medium uppercase text-zinc-400">เลเยอร์</p>
+              <select
+                value={activeWireLayerId ?? ""}
+                onChange={(e) => {
+                  const id = e.target.value || null;
+                  setActiveWireLayer(id);
+                  if (id) {
+                    const layer = wireLayers.find((l) => l.id === id);
+                    if (layer?.thickness !== undefined) setWireThickness(layer.thickness);
+                  }
+                }}
+                className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+              >
+                <option value="">(ไม่เลือกเลเยอร์)</option>
+                {wireLayers.map((l) => (
+                  <option key={l.id} value={l.id}>
+                    {l.name}{l.thickness !== undefined ? ` — ${l.thickness} sq.mm` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="mb-2 flex flex-wrap gap-1.5">
             {presetColors.map((c) => (
               <button
@@ -281,18 +308,47 @@ export default function Sidebar() {
               title="Custom color"
             />
           </div>
-          <label className="flex items-center gap-2 text-xs">
-            <span className="text-zinc-500">Thickness</span>
+          <div className="mt-2">
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs text-zinc-500">ขนาดสาย (sq.mm)</span>
+              <input
+                type="number"
+                min={0.1}
+                max={240}
+                step={0.1}
+                value={wireThickness}
+                onChange={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v) && v > 0) setWireThickness(v);
+                }}
+                className="w-16 rounded border border-zinc-300 bg-white px-1.5 py-0.5 text-right text-xs tabular-nums dark:border-zinc-700 dark:bg-zinc-900"
+              />
+            </div>
             <input
               type="range"
-              min={1}
-              max={10}
-              value={wireThickness}
-              onChange={(e) => setWireThickness(Number(e.target.value))}
-              className="flex-1"
+              min={0.5}
+              max={50}
+              step={0.5}
+              value={Math.min(wireThickness, 50)}
+              onChange={(e) => setWireThickness(parseFloat(e.target.value))}
+              className="w-full"
             />
-            <span className="w-6 text-right tabular-nums">{wireThickness}</span>
-          </label>
+            <div className="mt-1 flex flex-wrap gap-1">
+              {[0.5, 1, 1.5, 2.5, 4, 6, 10, 16, 25].map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setWireThickness(v)}
+                  className={`rounded px-1.5 py-0.5 text-[10px] tabular-nums ${
+                    wireThickness === v
+                      ? "bg-blue-500 text-white"
+                      : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"
+                  }`}
+                >
+                  {v}
+                </button>
+              ))}
+            </div>
+          </div>
           <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs select-none">
             <div
               onClick={() => setWireJumps(!wireJumps)}
@@ -347,20 +403,48 @@ export default function Sidebar() {
                 title="Custom color"
               />
             </div>
-            <label className="flex items-center gap-2 text-xs">
-              <span className="text-zinc-500">Thickness</span>
+            <div className="mt-1">
+              <div className="mb-1 flex items-center justify-between">
+                <span className="text-xs text-zinc-500">ขนาดสาย (sq.mm)</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  max={240}
+                  step={0.1}
+                  value={sameThickness ? firstWire.thickness : ""}
+                  placeholder={sameThickness ? undefined : "–"}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    if (!isNaN(v) && v > 0) applyThickness(v);
+                  }}
+                  className="w-16 rounded border border-zinc-300 bg-white px-1.5 py-0.5 text-right text-xs tabular-nums dark:border-zinc-700 dark:bg-zinc-900"
+                />
+              </div>
               <input
                 type="range"
-                min={1}
-                max={10}
-                value={sameThickness ? firstWire.thickness : 2}
-                onChange={(e) => applyThickness(Number(e.target.value))}
-                className="flex-1"
+                min={0.5}
+                max={50}
+                step={0.5}
+                value={Math.min(sameThickness ? firstWire.thickness : 1.5, 50)}
+                onChange={(e) => applyThickness(parseFloat(e.target.value))}
+                className="w-full"
               />
-              <span className="w-6 text-right tabular-nums">
-                {sameThickness ? firstWire.thickness : "–"}
-              </span>
-            </label>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {[0.5, 1, 1.5, 2.5, 4, 6, 10, 16, 25].map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => applyThickness(v)}
+                    className={`rounded px-1.5 py-0.5 text-[10px] tabular-nums ${
+                      sameThickness && firstWire.thickness === v
+                        ? "bg-blue-500 text-white"
+                        : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
         );
       })()}

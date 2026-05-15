@@ -68,6 +68,12 @@ export function DbSync() {
         store.setField("devices", data.devices ?? []);
         store.setField("wires", data.wires ?? []);
         store.setField("labels", data.labels ?? []);
+        if (Array.isArray(data.wireLayers) && data.wireLayers.length > 0) {
+          store.setField("wireLayers", data.wireLayers);
+        }
+        if (typeof data.activeWireLayerId === "string" || data.activeWireLayerId === null) {
+          store.setField("activeWireLayerId", data.activeWireLayerId);
+        }
         if (data.wireColor) store.setWireColor(data.wireColor);
         if (typeof data.wireThickness === "number") store.setWireThickness(data.wireThickness);
         if (typeof data.wireJumps === "boolean") store.setWireJumps(data.wireJumps);
@@ -125,6 +131,8 @@ export function DbSync() {
         wc: s.wireColor,
         wt: s.wireThickness,
         wj: s.wireJumps,
+        wl: s.wireLayers,
+        wla: s.activeWireLayerId,
         pid: s.currentProjectId,
         pn: s.currentProjectName,
       });
@@ -140,6 +148,7 @@ export function DbSync() {
 
       projectTimer.current = setTimeout(() => {
         const { devices, wires, labels, wireColor, wireThickness, wireJumps,
+          wireLayers, activeWireLayerId,
           currentProjectId, currentProjectName } = useEditorStore.getState();
         fetch("/api/project", {
           method: "POST",
@@ -153,6 +162,8 @@ export function DbSync() {
             wireColor,
             wireThickness,
             wireJumps,
+            wireLayers,
+            activeWireLayerId,
           }),
         })
           .then((r) => useEditorStore.getState().setDbStatus(r.ok ? "saved" : "error"))

@@ -19,6 +19,7 @@ import type Konva from "konva";
 import {
   useEditorStore,
   uid,
+  sqmmToStroke,
   type CanvasLabel,
   type Device,
   type DeviceTemplate,
@@ -917,7 +918,8 @@ function WireNode({
   onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
 }) {
   const hasJumps = jumpPoints && jumpPoints.length > 0;
-  const visualThickness = Math.max(1, wire.thickness + 0.6);
+  const visualThickness = sqmmToStroke(wire.thickness);
+  const hitWidth = Math.max(visualThickness + 8, 12);
   const shadowProps = {
     shadowColor: selected ? "#2563eb" : undefined,
     shadowBlur: selected ? 8 : 0,
@@ -943,8 +945,8 @@ function WireNode({
           <Line
             points={wire.points}
             stroke="transparent"
-            strokeWidth={Math.max(wire.thickness + 8, 12)}
-            hitStrokeWidth={Math.max(wire.thickness + 8, 12)}
+            strokeWidth={hitWidth}
+            hitStrokeWidth={hitWidth}
             onMouseDown={onSelect}
             onTap={onSelect}
             listening
@@ -967,8 +969,8 @@ function WireNode({
           <Line
             points={wire.points}
             stroke="transparent"
-            strokeWidth={Math.max(wire.thickness + 8, 12)}
-            hitStrokeWidth={Math.max(wire.thickness + 8, 12)}
+            strokeWidth={hitWidth}
+            hitStrokeWidth={hitWidth}
             onMouseDown={onSelect}
             onTap={onSelect}
             listening
@@ -2564,19 +2566,28 @@ export default function DeviceCanvas() {
     [selectedIds, wires]
   );
 
+  const wireLayers = useEditorStore((s) => s.wireLayers);
+
   const selectedWireNameTags = useMemo(() => {
     const selected = new Set(selectedIds);
     const out: { key: string; x: number; y: number; text: string }[] = [];
-    renderedWires.forEach((w, i) => {
+    // Per-layer counter so each layer numbers its wires independently (1..N).
+    const perLayerCount = new Map<string, number>();
+    const layerNameById = new Map(wireLayers.map((l) => [l.id, l.name]));
+    renderedWires.forEach((w) => {
+      const layerKey = w.layerId ?? "__none__";
+      const n = (perLayerCount.get(layerKey) ?? 0) + 1;
+      perLayerCount.set(layerKey, n);
       if (!selected.has(w.id) || w.points.length < 2) return;
       const mid = Math.floor(w.points.length / 4) * 2;
       const x = w.points[Math.min(mid, w.points.length - 2)];
       const y = w.points[Math.min(mid + 1, w.points.length - 1)] - 10 / view.scale;
-      const name = w.label?.trim() || `สายไฟ ${i + 1}`;
+      const layerName = w.layerId ? (layerNameById.get(w.layerId) ?? "สายไฟ") : "สายไฟ";
+      const name = w.label?.trim() || `${layerName} ${n}`;
       out.push({ key: `${w.id}:wire-name`, x, y, text: name });
     });
     return out;
-  }, [selectedIds, renderedWires, view.scale]);
+  }, [selectedIds, renderedWires, view.scale, wireLayers]);
   const rotationSnaps = useMemo(() => Array.from({ length: 36 }, (_, i) => i * 10), []);
 
   /**
@@ -3227,7 +3238,7 @@ export default function DeviceCanvas() {
             <Line
               points={draftVisual}
               stroke={useEditorStore.getState().wireColor}
-              strokeWidth={useEditorStore.getState().wireThickness}
+              strokeWidth={sqmmToStroke(useEditorStore.getState().wireThickness)}
               dash={[8, 6]}
               lineCap="round"
               lineJoin="round"

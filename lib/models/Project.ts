@@ -11,6 +11,8 @@ export interface IProject {
   wireColor: string;
   wireThickness: number;
   wireJumps: boolean;
+  wireLayers: object[];
+  activeWireLayerId?: string | null;
   updatedAt: Date;
 }
 
@@ -26,6 +28,8 @@ const ProjectSchema = new Schema<IProject>(
     wireColor: { type: String, default: "#dc2626" },
     wireThickness: { type: Number, default: 2 },
     wireJumps: { type: Boolean, default: false },
+    wireLayers: { type: [Schema.Types.Mixed], default: [] },
+    activeWireLayerId: { type: String, default: null },
   },
   { timestamps: true }
 );

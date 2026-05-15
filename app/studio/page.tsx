@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Sidebar from "../components/Sidebar";
+import WireLayerPanel from "../components/WireLayerPanel";
 
 const DeviceCanvas = dynamic(() => import("../components/DeviceCanvas"), {
   ssr: false,
@@ -19,6 +20,7 @@ export default function StudioPage() {
       <main className="relative flex-1">
         <DeviceCanvas />
       </main>
+      <WireLayerPanel />
     </div>
   );
 }

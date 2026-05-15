@@ -46,6 +46,8 @@ export async function POST(req: NextRequest) {
         wireColor: body.wireColor ?? "#dc2626",
         wireThickness: body.wireThickness ?? 2,
         wireJumps: body.wireJumps ?? false,
+        wireLayers: body.wireLayers ?? [],
+        activeWireLayerId: body.activeWireLayerId ?? null,
       },
       { upsert: true, new: true }
     );
