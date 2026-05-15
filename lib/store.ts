@@ -56,6 +56,8 @@ export type Device = {
   width: number;
   height: number;
   rotation: number;
+  flipX?: boolean;
+  flipY?: boolean;
 };
 
 export type Wire = {
@@ -83,6 +85,7 @@ export type CanvasLabel = {
   y: number;
   fontSize: number;
   color: string;
+  rotation?: number;
 };
 
 type State = {
@@ -144,6 +147,10 @@ type State = {
   setWireThickness: (n: number) => void;
   wireJumps: boolean;
   setWireJumps: (v: boolean) => void;
+  textFontSize: number;
+  setTextFontSize: (n: number) => void;
+  textColor: string;
+  setTextColor: (c: string) => void;
   exportPreview: { ids: string[]; padding: number } | null;
   setExportPreview: (v: { ids: string[]; padding: number } | null) => void;
   exportFrame: { x: number; y: number; width: number; height: number } | null;
@@ -183,6 +190,8 @@ export const useEditorStore = create<State>()(
   wireColor: "#dc2626",
   wireThickness: 2,
   draftFixed: null,
+  textFontSize: 18,
+  textColor: "#111827",
 
   addTemplate: (t) =>
     set((s) => ({ templates: [...s.templates, { ...t, terminals: [] }] })),
@@ -301,6 +310,10 @@ export const useEditorStore = create<State>()(
     }),
   setWireColor: (c) => set({ wireColor: c }),
   setWireThickness: (n) => set({ wireThickness: n }),
+  textFontSize: 18,
+  setTextFontSize: (n) => set({ textFontSize: n }),
+  textColor: "#111827",
+  setTextColor: (c) => set({ textColor: c }),
   wireJumps: false,
   setWireJumps: (v) => set({ wireJumps: v }),
   exportPreview: null,

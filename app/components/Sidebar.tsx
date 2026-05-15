@@ -67,6 +67,10 @@ export default function Sidebar() {
     setWireThickness,
     wireJumps,
     setWireJumps,
+    textFontSize,
+    setTextFontSize,
+    textColor,
+    setTextColor,
     selectedIds,
     devices,
     wires,
@@ -75,6 +79,7 @@ export default function Sidebar() {
     removeWire,
     removeLabel,
     updateWire,
+    updateLabel,
     addTemplateTerminal,
     updateTemplateTerminal,
     removeTemplateTerminal,
@@ -286,6 +291,97 @@ export default function Sidebar() {
               />
               <span className="w-6 text-right tabular-nums">
                 {sameThickness ? firstWire.thickness : "–"}
+              </span>
+            </label>
+          </section>
+        );
+      })()}
+
+      {/* Text tool settings */}
+      {activeTool === "text" && (
+        <section className="border-b border-zinc-200 p-3 dark:border-zinc-800">
+          <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">Text</h2>
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {["#111827","#dc2626","#1d4ed8","#16a34a","#f59e0b","#7c3aed","#6b7280","#ffffff"].map((c) => (
+              <button
+                key={c}
+                onClick={() => setTextColor(c)}
+                className={`h-6 w-6 rounded-full border ${
+                  textColor === c ? "ring-2 ring-blue-500 ring-offset-1" : "border-zinc-300"
+                }`}
+                style={{ backgroundColor: c }}
+                title={c}
+              />
+            ))}
+            <input
+              type="color"
+              value={textColor}
+              onChange={(e) => setTextColor(e.target.value)}
+              className="h-6 w-6 cursor-pointer rounded-full border border-zinc-300 bg-transparent"
+              title="Custom color"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-zinc-500">ขนาด</span>
+            <input
+              type="range"
+              min={8}
+              max={72}
+              value={textFontSize}
+              onChange={(e) => setTextFontSize(Number(e.target.value))}
+              className="flex-1"
+            />
+            <span className="w-8 text-right tabular-nums">{textFontSize}px</span>
+          </label>
+        </section>
+      )}
+
+      {/* Selected label properties */}
+      {(() => {
+        const selectedLabels = labels.filter((l) => selectedIds.includes(l.id));
+        if (selectedLabels.length === 0) return null;
+        const first = selectedLabels[0];
+        const sameColor = selectedLabels.every((l) => l.color === first.color);
+        const sameFontSize = selectedLabels.every((l) => l.fontSize === first.fontSize);
+        const applyColor = (c: string) => selectedLabels.forEach((l) => updateLabel(l.id, { color: c }));
+        const applyFontSize = (n: number) => selectedLabels.forEach((l) => updateLabel(l.id, { fontSize: n }));
+        return (
+          <section className="border-b border-zinc-200 p-3 dark:border-zinc-800 bg-amber-50 dark:bg-amber-950">
+            <h2 className="mb-2 text-xs font-medium uppercase text-amber-600 dark:text-amber-400">
+              {selectedLabels.length === 1 ? "Selected Text" : `Selected Texts (${selectedLabels.length})`}
+            </h2>
+            <div className="mb-2 flex flex-wrap gap-1.5">
+              {["#111827","#dc2626","#1d4ed8","#16a34a","#f59e0b","#7c3aed","#6b7280","#ffffff"].map((c) => (
+                <button
+                  key={c}
+                  onClick={() => applyColor(c)}
+                  className={`h-6 w-6 rounded-full border ${
+                    sameColor && first.color === c ? "ring-2 ring-blue-500 ring-offset-1" : "border-zinc-300"
+                  }`}
+                  style={{ backgroundColor: c }}
+                  title={c}
+                />
+              ))}
+              <input
+                type="color"
+                value={sameColor ? first.color : "#000000"}
+                onChange={(e) => applyColor(e.target.value)}
+                className="h-6 w-6 cursor-pointer rounded-full border border-zinc-300 bg-transparent"
+                title="Custom color"
+              />
+            </div>
+            <label className="flex items-center gap-2 text-xs">
+              <span className="text-zinc-500">ขนาด</span>
+              <input
+                type="range"
+                min={8}
+                max={72}
+                value={sameFontSize ? first.fontSize : 18}
+                onChange={(e) => applyFontSize(Number(e.target.value))}
+                className="flex-1"
+              />
+              <span className="w-8 text-right tabular-nums">
+                {sameFontSize ? `${first.fontSize}px` : "–"}
               </span>
             </label>
           </section>

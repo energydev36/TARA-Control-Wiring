@@ -27,6 +27,11 @@ import {
   Minus,
   Plus,
   LocateFixed,
+  Link2,
+  Unlink2,
+  RotateCcw,
+  FlipHorizontal,
+  FlipVertical,
 } from "lucide-react";
 
 type SnapResult = { x: number; y: number; deviceId: string; terminalId: string };
@@ -192,8 +197,10 @@ function recalcBoundWiresOnList(
 
 // World position of a terminal accounting for device rotation
 function terminalWorld(device: Device, fx: number, fy: number) {
-  const lx = fx * device.width;
-  const ly = fy * device.height;
+  const rawX = fx * device.width;
+  const rawY = fy * device.height;
+  const lx = device.flipX ? device.width - rawX : rawX;
+  const ly = device.flipY ? device.height - rawY : rawY;
   const r = (device.rotation * Math.PI) / 180;
   return {
     x: device.x + Math.cos(r) * lx - Math.sin(r) * ly,
@@ -374,6 +381,10 @@ function DeviceNode({
       y={device.y}
       width={device.width}
       height={device.height}
+      offsetX={device.flipX ? device.width : 0}
+      offsetY={device.flipY ? device.height : 0}
+      scaleX={device.flipX ? -1 : 1}
+      scaleY={device.flipY ? -1 : 1}
       rotation={device.rotation}
       draggable={draggable}
       onMouseDown={onSelect}
@@ -384,14 +395,20 @@ function DeviceNode({
         const node = e.target;
         const scaleX = node.scaleX();
         const scaleY = node.scaleY();
-        node.scaleX(1);
-        node.scaleY(1);
+        const nextFlipX = scaleX < 0;
+        const nextFlipY = scaleY < 0;
+        const absScaleX = Math.abs(scaleX);
+        const absScaleY = Math.abs(scaleY);
+        node.scaleX(nextFlipX ? -1 : 1);
+        node.scaleY(nextFlipY ? -1 : 1);
         onChange({
           x: node.x(),
           y: node.y(),
-          width: Math.max(20, node.width() * scaleX),
-          height: Math.max(20, node.height() * scaleY),
+          width: Math.max(20, node.width() * absScaleX),
+          height: Math.max(20, node.height() * absScaleY),
           rotation: node.rotation(),
+          flipX: nextFlipX,
+          flipY: nextFlipY,
         });
       }}
       stroke={selected ? "#2563eb" : undefined}
@@ -412,6 +429,7 @@ function LabelNode({
   label,
   selected,
   activeTool,
+  editing,
   onSelect,
   onChange,
   onEdit,
@@ -419,18 +437,20 @@ function LabelNode({
   label: CanvasLabel;
   selected: boolean;
   activeTool: import("@/lib/store").Tool;
+  editing: boolean;
   onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   onChange: (patch: Partial<CanvasLabel>) => void;
   onEdit: () => void;
 }) {
   const { width, height } = labelMetrics(label);
-  const draggable = activeTool === "select";
+  const draggable = activeTool === "select" && !editing;
 
   return (
     <Group
       id={label.id}
       x={label.x}
       y={label.y}
+      rotation={label.rotation ?? 0}
       draggable={draggable}
       onMouseDown={onSelect}
       onTap={onSelect}
@@ -440,14 +460,29 @@ function LabelNode({
       }}
       onDragMove={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
       onDragEnd={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
+      onTransformEnd={(e) => {
+        const node = e.target;
+        const scaleX = node.scaleX();
+        const scaleY = node.scaleY();
+        // Use average scale to resize font proportionally
+        const scale = (Math.abs(scaleX) + Math.abs(scaleY)) / 2;
+        node.scaleX(1);
+        node.scaleY(1);
+        onChange({
+          x: node.x(),
+          y: node.y(),
+          fontSize: Math.max(6, Math.round(label.fontSize * scale)),
+          rotation: node.rotation(),
+        });
+      }}
     >
       <KText
-        text={label.text}
+        text={editing ? "" : label.text}
         fontSize={label.fontSize}
         fill={label.color}
         lineHeight={1.2}
       />
-      {selected && (
+      {selected && !editing && (
         <Rect
           x={-4}
           y={-4}
@@ -820,12 +855,14 @@ function WireNode({
   selected,
   jumpPoints,
   sharpCorners,
+  onTransformCommit,
   onSelect,
 }: {
   wire: Wire;
   selected: boolean;
   jumpPoints?: { x: number; y: number }[];
   sharpCorners?: { x: number; y: number }[];
+  onTransformCommit?: (node: Konva.Node) => void;
   onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
 }) {
   const hasJumps = jumpPoints && jumpPoints.length > 0;
@@ -836,7 +873,11 @@ function WireNode({
     shadowOpacity: selected ? 0.7 : 0,
   };
   return (
-    <>
+    <Group
+      id={wire.id}
+      onTransformEnd={(e) => onTransformCommit?.(e.target)}
+      onDragEnd={(e) => onTransformCommit?.(e.target)}
+    >
       {hasJumps ? (
         <>
           {/* Transparent wide line for hit-testing */}
@@ -851,7 +892,6 @@ function WireNode({
           />
           {/* Visual path with arcs */}
           <KPath
-            id={wire.id}
             data={buildWirePathData(wire.points, jumpPoints!)}
             stroke={wire.color}
             strokeWidth={visualThickness}
@@ -876,7 +916,6 @@ function WireNode({
           />
           {/* Rounded-corner visual path */}
           <KPath
-            id={wire.id}
             data={buildRoundedPolylinePathDataWithSharpCorners(wire.points, sharpCorners ?? [])}
             stroke={wire.color}
             strokeWidth={visualThickness}
@@ -888,7 +927,7 @@ function WireNode({
           />
         </>
       )}
-    </>
+    </Group>
   );
 }
 
@@ -1495,6 +1534,11 @@ export default function DeviceCanvas() {
   const [pinPreviewSize, setPinPreviewSize] = useState<{ width: number; height: number } | null>(null);
   const [pinGuideRect, setPinGuideRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [showMiniMap, setShowMiniMap] = useState(false);
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
+  const [lockAspect, setLockAspect] = useState(true);
+  const [transformControlsPos, setTransformControlsPos] = useState<{ x: number; y: number } | null>(null);
+  const [rotationHint, setRotationHint] = useState<{ x: number; y: number; deg: number } | null>(null);
+  const imageRatioCacheRef = useRef<Record<string, number>>({});
   const vFirstRef = useRef(false); // Shift = vertical-first routing
   const draftStartBindRef = useRef<WireBind | null>(null); // terminal the wire starts from
   const draftStartWireBindRef = useRef<{ wireId: string; t: number } | null>(null); // wire tap start
@@ -1513,6 +1557,7 @@ export default function DeviceCanvas() {
     addLabel,
     updateDevice,
     updateLabel,
+    updateWire,
     setSelected,
     toggleSelected,
     clearSelected,
@@ -1528,6 +1573,8 @@ export default function DeviceCanvas() {
     exportPreview,
     exportFrame,
     setExportFrame,
+    textFontSize,
+    textColor,
   } = useEditorStore();
   const prevToolRef = useRef(activeTool);
 
@@ -1690,18 +1737,22 @@ export default function DeviceCanvas() {
     };
   }, [activeTool, activeTemplateId, templates]);
 
-  // Attach transformer to selected device nodes
+  // Attach transformer to selected nodes
   useEffect(() => {
     const tr = transformerRef.current;
     const stage = stageRef.current;
     if (!tr || !stage) return;
+    const wireIds = new Set(wires.map((w) => w.id));
     const nodes = selectedIds
-      .map((id) => stage.findOne<Konva.Node>(`#${CSS.escape(id)}`))
-      .filter((n): n is Konva.Node => !!n)
-      .filter((n) => n.getClassName() === "Image");
+      .filter((id) => !wireIds.has(id))
+      .map((id) => {
+        const hits = stage.find((n: Konva.Node) => n.id() === id);
+        return hits.length ? hits[0] : null;
+      })
+      .filter((n): n is Konva.Node => !!n);
     tr.nodes(nodes);
     tr.getLayer()?.batchDraw();
-  }, [selectedIds, devices]);
+  }, [selectedIds, devices, labels, wires]);
 
   // Convert pointer to world coords
   const getWorld = () => {
@@ -1952,8 +2003,8 @@ export default function DeviceCanvas() {
         text: "Label",
         x: w.x,
         y: w.y,
-        fontSize: 18,
-        color: "#111827",
+        fontSize: textFontSize,
+        color: textColor,
       });
       setSelected([id]);
       return;
@@ -2258,6 +2309,103 @@ export default function DeviceCanvas() {
     return wires.map((w) => map.get(w.id) ?? w);
   }, [wires]);
 
+  const selectedHasWire = useMemo(
+    () => selectedIds.some((id) => wires.some((w) => w.id === id)),
+    [selectedIds, wires]
+  );
+  const rotationSnaps = useMemo(() => Array.from({ length: 36 }, (_, i) => i * 10), []);
+
+  const getImageRatio = async (src: string): Promise<number> => {
+    if (imageRatioCacheRef.current[src]) return imageRatioCacheRef.current[src];
+    const ratio = await new Promise<number>((resolve) => {
+      const img = new window.Image();
+      img.onload = () => resolve((img.width || 1) / (img.height || 1));
+      img.onerror = () => resolve(1);
+      img.src = src;
+    });
+    imageRatioCacheRef.current[src] = ratio;
+    return ratio;
+  };
+
+  const resetSelectedSize = async () => {
+    const maxDim = 160;
+    for (const id of selectedIds) {
+      const d = devices.find((x) => x.id === id);
+      if (d) {
+        const tpl = templates.find((t) => t.id === d.templateId);
+        const ratio = tpl ? await getImageRatio(tpl.src) : d.width / Math.max(1, d.height);
+        const width = ratio >= 1 ? maxDim : maxDim * ratio;
+        const height = ratio >= 1 ? maxDim / ratio : maxDim;
+        const cx = d.x + d.width / 2;
+        const cy = d.y + d.height / 2;
+        const updated: Device = {
+          ...d,
+          x: cx - width / 2,
+          y: cy - height / 2,
+          width,
+          height,
+          rotation: 0,
+          flipX: false,
+          flipY: false,
+        };
+        updateDevice(d.id, {
+          x: updated.x,
+          y: updated.y,
+          width: updated.width,
+          height: updated.height,
+          rotation: 0,
+          flipX: false,
+          flipY: false,
+        });
+        recalcBoundWires(d.id, updated, d, templates, wires, updateWire);
+        continue;
+      }
+
+      const l = labels.find((x) => x.id === id);
+      if (l) {
+        updateLabel(l.id, { fontSize: textFontSize, rotation: 0 });
+      }
+    }
+  };
+
+  const flipSelectedHorizontal = () => {
+    for (const id of selectedIds) {
+      const d = devices.find((x) => x.id === id);
+      if (!d) continue;
+      const updated: Device = { ...d, flipX: !d.flipX };
+      updateDevice(d.id, { flipX: updated.flipX });
+      recalcBoundWires(d.id, updated, d, templates, wires, updateWire);
+    }
+  };
+
+  const flipSelectedVertical = () => {
+    for (const id of selectedIds) {
+      const d = devices.find((x) => x.id === id);
+      if (!d) continue;
+      const updated: Device = { ...d, flipY: !d.flipY };
+      updateDevice(d.id, { flipY: updated.flipY });
+      recalcBoundWires(d.id, updated, d, templates, wires, updateWire);
+    }
+  };
+
+  useEffect(() => {
+    const tr = transformerRef.current;
+    if (!tr || activeTool !== "select") {
+      setTransformControlsPos(null);
+      return;
+    }
+    const nodes = tr.nodes();
+    if (!nodes || nodes.length === 0) {
+      setTransformControlsPos(null);
+      return;
+    }
+    const box = tr.getClientRect();
+    setTransformControlsPos({
+      x: box.x + box.width / 2,
+      y: box.y  / 1.5,
+    });
+  }, [activeTool, selectedIds, devices, labels, view]);
+
   return (
     <div
       ref={containerRef}
@@ -2438,10 +2586,10 @@ export default function DeviceCanvas() {
                 else setSelected([l.id]);
               }}
               onChange={(patch) => updateLabel(l.id, patch)}
+              editing={editingLabelId === l.id}
               onEdit={() => {
-                const next = window.prompt("ข้อความ Label", l.text);
-                if (next === null) return;
-                updateLabel(l.id, { text: next || "Label" });
+                setSelected([l.id]);
+                setEditingLabelId(l.id);
               }}
             />
           ))}
@@ -2467,6 +2615,18 @@ export default function DeviceCanvas() {
                 selected={selectedIds.includes(w.id)}
                 jumpPoints={wireJumps ? computeJumpPoints(w, wi, renderedWires) : undefined}
                 sharpCorners={sharpCorners}
+                onTransformCommit={(node) => {
+                  const tx = node.getTransform();
+                  const pts: number[] = [];
+                  for (let i = 0; i < w.points.length; i += 2) {
+                    const p = tx.point({ x: w.points[i], y: w.points[i + 1] });
+                    pts.push(p.x, p.y);
+                  }
+                  node.position({ x: 0, y: 0 });
+                  node.scale({ x: 1, y: 1 });
+                  node.rotation(0);
+                  updateWire(w.id, { points: mergeCollinear(cleanWirePoints(pts)) });
+                }}
                 onSelect={(e) => {
                   if (activeTool === "pan") {
                     // allow Stage draggable to pan even when clicking on a wire
@@ -2681,8 +2841,71 @@ export default function DeviceCanvas() {
 
           <Transformer
             ref={transformerRef}
-            rotateEnabled
-            keepRatio={false}
+            rotateEnabled={!selectedHasWire}
+            rotationSnaps={rotationSnaps}
+            rotationSnapTolerance={6}
+            keepRatio={lockAspect}
+            enabledAnchors={[
+              "top-left",
+              "top-center",
+              "top-right",
+              "middle-left",
+              "middle-right",
+              "bottom-left",
+              "bottom-center",
+              "bottom-right",
+            ]}
+            boundBoxFunc={lockAspect ? ((oldBox, newBox) => {
+              const minSize = 10;
+              const oldW = Math.max(Math.abs(oldBox.width), minSize);
+              const oldH = Math.max(Math.abs(oldBox.height), minSize);
+              const ratio = oldW / oldH;
+
+              let width = Math.max(Math.abs(newBox.width), minSize);
+              let height = Math.max(Math.abs(newBox.height), minSize);
+
+              const active = transformerRef.current?.getActiveAnchor() ?? "";
+
+              if (active.includes("left") || active.includes("right")) {
+                height = width / ratio;
+              } else if (active.includes("top") || active.includes("bottom")) {
+                width = height * ratio;
+              } else {
+                const sx = width / oldW;
+                const sy = height / oldH;
+                const s = Math.max(sx, sy);
+                width = oldW * s;
+                height = oldH * s;
+              }
+
+              const cx = newBox.x + newBox.width / 2;
+              const cy = newBox.y + newBox.height / 2;
+              return {
+                x: cx - width / 2,
+                y: cy - height / 2,
+                width,
+                height,
+                rotation: newBox.rotation,
+              };
+            }) : undefined}
+            onTransform={() => {
+              const tr = transformerRef.current;
+              const stage = stageRef.current;
+              if (!tr || !stage) return;
+              const active = tr.getActiveAnchor() ?? "";
+              if (!active.includes("rotater")) {
+                setRotationHint(null);
+                return;
+              }
+              const node = tr.nodes()[0];
+              const p = stage.getPointerPosition();
+              if (!node || !p) return;
+              const deg = ((Math.round(node.rotation()) % 360) + 360) % 360;
+              setRotationHint({ x: p.x + 14, y: p.y - 14, deg });
+            }}
+            onTransformEnd={() => {
+              setRotationHint(null);
+            }}
             anchorSize={8}
             borderStroke="#2563eb"
             anchorStroke="#2563eb"
@@ -3013,6 +3236,58 @@ export default function DeviceCanvas() {
         }}
       />
 
+      {/* Floating transform controls */}
+      {activeTool === "select" && transformControlsPos && !selectedHasWire && (
+        <div
+          className="absolute z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-blue-300 bg-blue-500/90 p-1 shadow-md backdrop-blur-sm dark:border-blue-400 dark:bg-blue-600/90"
+          style={{ left: transformControlsPos.x, top: transformControlsPos.y }}
+        >
+          <button
+            onClick={() => setLockAspect((v) => !v)}
+            className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${
+              lockAspect
+                ? "bg-white text-blue-700 hover:bg-blue-50"
+                : "text-white hover:bg-blue-400/70"
+            }`}
+            title={lockAspect ? "ล็อคอัตราส่วน (โซ่)" : "ฟรีสไตล์ (โซ่ขาด)"}
+          >
+            {lockAspect ? <Link2 size={14} /> : <Unlink2 size={14} />}
+          </button>
+          <button
+            onClick={flipSelectedHorizontal}
+            className="flex h-7 w-7 items-center justify-center rounded text-white transition-colors hover:bg-blue-400/70"
+            title="พลิกซ้ายขวา"
+          >
+            <FlipHorizontal size={14} />
+          </button>
+          <button
+            onClick={flipSelectedVertical}
+            className="flex h-7 w-7 items-center justify-center rounded text-white transition-colors hover:bg-blue-400/70"
+            title="พลิกบนล่าง"
+          >
+            <FlipVertical size={14} />
+          </button>
+          <button
+            onClick={() => {
+              void resetSelectedSize();
+            }}
+            className="flex h-7 w-7 items-center justify-center rounded text-white transition-colors hover:bg-blue-400/70"
+            title="รีเซ็ตขนาด"
+          >
+            <RotateCcw size={14} />
+          </button>
+        </div>
+      )}
+
+      {rotationHint && (
+        <div
+          className="pointer-events-none absolute z-40 -translate-x-1/2 -translate-y-full rounded bg-black/75 px-2 py-0.5 text-[11px] font-medium text-white"
+          style={{ left: rotationHint.x, top: rotationHint.y }}
+        >
+          {rotationHint.deg}°
+        </div>
+      )}
+
       {/* Hint overlay */}
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/60 px-3 py-1.5 text-xs text-white">
         {activeTool === "wire" && "คลิกพื้นที่ว่าง = เพิ่มจุดหัก · คลิก Terminal = จบสาย · Double-click = จบลอย · Shift = สลับแนว · ESC ยกเลิก"}
@@ -3115,6 +3390,58 @@ export default function DeviceCanvas() {
 
       {/* expose stage to window for export */}
       <StageBridge stageRef={stageRef} viewRef={view} />
+
+      {/* Inline label editor */}
+      {editingLabelId && (() => {
+        const lbl = labels.find((l) => l.id === editingLabelId);
+        if (!lbl) return null;
+        // Convert canvas coords → screen coords
+        const sx = lbl.x * view.scale + view.x;
+        const sy = lbl.y * view.scale + view.y;
+        const scaledFontSize = lbl.fontSize * view.scale;
+        return (
+          <textarea
+            autoFocus
+            defaultValue={lbl.text}
+            onFocus={(e) => {
+              // Move cursor to end
+              const len = e.target.value.length;
+              e.target.setSelectionRange(len, len);
+            }}
+            onChange={(e) => updateLabel(lbl.id, { text: e.target.value })}
+            onBlur={() => setEditingLabelId(null)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setEditingLabelId(null);
+              }
+              // Ctrl/Cmd+Enter also finishes
+              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                setEditingLabelId(null);
+              }
+              e.stopPropagation();
+            }}
+            rows={Math.max(1, lbl.text.split(/\r?\n/).length)}
+            style={{
+              position: "absolute",
+              left: sx,
+              top: sy,
+              fontSize: scaledFontSize,
+              color: lbl.color,
+              lineHeight: 1.2,
+              fontFamily: "inherit",
+              background: "#ffffff",
+              border: "2px solid #2563eb",
+              borderRadius: 4,
+              outline: "none",
+              resize: "none",
+              padding: "0 4px",
+              minWidth: 40,
+              overflow: "hidden",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }
