@@ -2567,16 +2567,14 @@ export default function DeviceCanvas() {
   const selectedWireNameTags = useMemo(() => {
     const selected = new Set(selectedIds);
     const out: { key: string; x: number; y: number; text: string }[] = [];
-    let index = 1;
-    for (const w of renderedWires) {
-      if (!selected.has(w.id) || w.points.length < 2) continue;
+    renderedWires.forEach((w, i) => {
+      if (!selected.has(w.id) || w.points.length < 2) return;
       const mid = Math.floor(w.points.length / 4) * 2;
       const x = w.points[Math.min(mid, w.points.length - 2)];
       const y = w.points[Math.min(mid + 1, w.points.length - 1)] - 10 / view.scale;
-      const name = w.label?.trim() || `สายไฟ ${index}`;
+      const name = w.label?.trim() || `สายไฟ ${i + 1}`;
       out.push({ key: `${w.id}:wire-name`, x, y, text: name });
-      index += 1;
-    }
+    });
     return out;
   }, [selectedIds, renderedWires, view.scale]);
   const rotationSnaps = useMemo(() => Array.from({ length: 36 }, (_, i) => i * 10), []);
