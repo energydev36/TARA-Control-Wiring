@@ -5,6 +5,7 @@ import {
   Stage,
   Layer,
   Image as KImage,
+  Text as KText,
   Line,
   Rect,
   Circle,
@@ -16,10 +17,17 @@ import type Konva from "konva";
 import {
   useEditorStore,
   uid,
+  type CanvasLabel,
   type Device,
   type DeviceTemplate,
   type Wire,
 } from "@/lib/store";
+import {
+  Map as MapIcon,
+  Minus,
+  Plus,
+  LocateFixed,
+} from "lucide-react";
 
 type SnapResult = { x: number; y: number; deviceId: string; terminalId: string };
 type WireBind = { deviceId: string; terminalId: string };
@@ -285,6 +293,53 @@ function resolveAndLockWireEndpoints(
   };
 }
 
+function keepEndpointOrthogonal(
+  pts: number[],
+  endpoint: "start" | "end",
+  vFirst?: boolean
+) {
+  const out = pts.slice();
+  const n = out.length;
+  const EPS = 0.5;
+  if (n < 4) return out;
+
+  if (endpoint === "start") {
+    if (n >= 6) {
+      const nx = out[4], ny = out[5];
+      const ex = out[2], ey = out[3];
+      const seg2Vert = Math.abs(ex - nx) < EPS;
+      const seg2Horiz = Math.abs(ey - ny) < EPS;
+      if (seg2Vert) out[3] = out[1];
+      else if (seg2Horiz) out[2] = out[0];
+      else if (vFirst) out[2] = out[0];
+      else out[3] = out[1];
+    } else {
+      const dx = Math.abs(out[2] - out[0]);
+      const dy = Math.abs(out[3] - out[1]);
+      if (dx < dy) out[2] = out[0];
+      else out[3] = out[1];
+    }
+    return out;
+  }
+
+  if (n >= 6) {
+    const px = out[n - 6], py = out[n - 5];
+    const ex = out[n - 4], ey = out[n - 3];
+    const segPrevVert = Math.abs(ex - px) < EPS;
+    const segPrevHoriz = Math.abs(ey - py) < EPS;
+    if (segPrevVert) out[n - 3] = out[n - 1];
+    else if (segPrevHoriz) out[n - 4] = out[n - 2];
+    else if (vFirst) out[n - 3] = out[n - 1];
+    else out[n - 4] = out[n - 2];
+  } else {
+    const dx = Math.abs(out[n - 2] - out[n - 4]);
+    const dy = Math.abs(out[n - 1] - out[n - 3]);
+    if (dx < dy) out[n - 4] = out[n - 2];
+    else out[n - 3] = out[n - 1];
+  }
+  return out;
+}
+
 function useImage(src: string) {
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
@@ -342,6 +397,69 @@ function DeviceNode({
       stroke={selected ? "#2563eb" : undefined}
       strokeWidth={selected ? 2 : 0}
     />
+  );
+}
+
+function labelMetrics(label: CanvasLabel) {
+  const lines = (label.text || "").split(/\r?\n/);
+  const chars = Math.max(1, ...lines.map((l) => l.length));
+  const width = Math.max(16, chars * label.fontSize * 0.62);
+  const height = Math.max(12, lines.length * label.fontSize * 1.2);
+  return { width, height };
+}
+
+function LabelNode({
+  label,
+  selected,
+  activeTool,
+  onSelect,
+  onChange,
+  onEdit,
+}: {
+  label: CanvasLabel;
+  selected: boolean;
+  activeTool: import("@/lib/store").Tool;
+  onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
+  onChange: (patch: Partial<CanvasLabel>) => void;
+  onEdit: () => void;
+}) {
+  const { width, height } = labelMetrics(label);
+  const draggable = activeTool === "select";
+
+  return (
+    <Group
+      id={label.id}
+      x={label.x}
+      y={label.y}
+      draggable={draggable}
+      onMouseDown={onSelect}
+      onTap={onSelect}
+      onDblClick={(e) => {
+        e.cancelBubble = true;
+        onEdit();
+      }}
+      onDragMove={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
+      onDragEnd={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
+    >
+      <KText
+        text={label.text}
+        fontSize={label.fontSize}
+        fill={label.color}
+        lineHeight={1.2}
+      />
+      {selected && (
+        <Rect
+          x={-4}
+          y={-4}
+          width={width + 8}
+          height={height + 8}
+          stroke="#2563eb"
+          strokeWidth={1.5}
+          cornerRadius={4}
+          listening={false}
+        />
+      )}
+    </Group>
   );
 }
 
@@ -632,17 +750,82 @@ function buildRoundedPolylinePathData(points: number[], cornerRadius = WIRE_CORN
   d += ` L ${last.x} ${last.y}`;
   return d;
 }
+
+function buildRoundedPolylinePathDataWithSharpCorners(
+  points: number[],
+  sharpCorners: { x: number; y: number }[] = [],
+  cornerRadius = WIRE_CORNER_R
+): string {
+  const count = Math.floor(points.length / 2);
+  if (count < 2) return "";
+
+  const get = (i: number) => ({ x: points[i * 2], y: points[i * 2 + 1] });
+  const p0 = get(0);
+  let d = `M ${p0.x} ${p0.y}`;
+
+  if (count === 2) {
+    const p1 = get(1);
+    return `${d} L ${p1.x} ${p1.y}`;
+  }
+
+  const EPS = 1.5;
+  const isSharpCorner = (x: number, y: number) =>
+    sharpCorners.some((p) => Math.hypot(p.x - x, p.y - y) <= EPS);
+
+  for (let i = 1; i < count - 1; i++) {
+    const prev = get(i - 1);
+    const curr = get(i);
+    const next = get(i + 1);
+
+    const v1x = curr.x - prev.x;
+    const v1y = curr.y - prev.y;
+    const v2x = next.x - curr.x;
+    const v2y = next.y - curr.y;
+
+    const len1 = Math.hypot(v1x, v1y);
+    const len2 = Math.hypot(v2x, v2y);
+    if (len1 < 0.001 || len2 < 0.001) {
+      d += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    if (isSharpCorner(curr.x, curr.y)) {
+      d += ` L ${curr.x} ${curr.y}`;
+      continue;
+    }
+
+    const cut = Math.min(cornerRadius, len1 / 2, len2 / 2);
+    const u1x = v1x / len1;
+    const u1y = v1y / len1;
+    const u2x = v2x / len2;
+    const u2y = v2y / len2;
+
+    const inX = curr.x - u1x * cut;
+    const inY = curr.y - u1y * cut;
+    const outX = curr.x + u2x * cut;
+    const outY = curr.y + u2y * cut;
+
+    d += ` L ${inX} ${inY}`;
+    d += ` Q ${curr.x} ${curr.y} ${outX} ${outY}`;
+  }
+
+  const last = get(count - 1);
+  d += ` L ${last.x} ${last.y}`;
+  return d;
+}
 // ────────────────────────────────────────────────────────────────────
 
 function WireNode({
   wire,
   selected,
   jumpPoints,
+  sharpCorners,
   onSelect,
 }: {
   wire: Wire;
   selected: boolean;
   jumpPoints?: { x: number; y: number }[];
+  sharpCorners?: { x: number; y: number }[];
   onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
 }) {
   const hasJumps = jumpPoints && jumpPoints.length > 0;
@@ -694,7 +877,7 @@ function WireNode({
           {/* Rounded-corner visual path */}
           <KPath
             id={wire.id}
-            data={buildRoundedPolylinePathData(wire.points)}
+            data={buildRoundedPolylinePathDataWithSharpCorners(wire.points, sharpCorners ?? [])}
             stroke={wire.color}
             strokeWidth={visualThickness}
             fill="transparent"
@@ -713,6 +896,7 @@ function WireNode({
  *  cause insertion of a new corner so the bound point stays put. */
 function WireSegmentHandles({
   wire,
+  allWires,
   scale,
   devices,
   templates,
@@ -721,12 +905,18 @@ function WireSegmentHandles({
   onEndpointDragStateChange,
 }: {
   wire: Wire;
+  allWires: Wire[];
   scale: number;
   devices: Device[];
   templates: DeviceTemplate[];
   onCommit: (
     pts: number[],
-    bindPatch?: Partial<Pick<Wire, "startBind" | "endBind">>
+    bindPatch?: Partial<
+      Pick<
+        Wire,
+        "startBind" | "endBind" | "startWireBind" | "endWireBind"
+      >
+    >
   ) => void;
   onDeleteCorner: (idx: number) => void;
   onEndpointDragStateChange?: (dragging: boolean) => void;
@@ -735,13 +925,78 @@ function WireSegmentHandles({
   const count = Math.floor(pts.length / 2);
   const dragRef = useRef<{ origPts: number[]; segIdx: number; orient: "H" | "V"; aBound: boolean; bBound: boolean } | null>(null);
   const endpointDragRef = useRef<{ origPts: number[]; endpoint: "start" | "end" } | null>(null);
+  const [endpointSnapHint, setEndpointSnapHint] = useState<{ x: number; y: number } | null>(null);
   if (count < 2) return null;
   const r = 5 / scale;
   const stroke = 1.5 / scale;
   const hit = Math.max(wire.thickness + 12, 16) / scale;
+  const mergeTol = 16 / scale;
+  const endpointMergeTol = 40 / scale;
   const EPS = 0.5;
   const startBound = !!wire.startBind;
   const endBound = !!wire.endBind;
+
+  const normalizeDraggedWire = (
+    inPts: number[],
+    lockStart: boolean,
+    lockEnd: boolean,
+    tol = mergeTol
+  ) =>
+    collapseShortSegments(
+      mergeCollinear(ensureOrthogonal(inPts)),
+      tol,
+      lockStart,
+      lockEnd
+    );
+
+  const snapEndpointCoord = (
+    curWirePts: number[],
+    endpoint: "start" | "end",
+    orient: "H" | "V",
+    coord: number,
+    tol: number
+  ) => {
+    const EPS2 = 0.5;
+    let best: { v: number; d: number } | null = null;
+    for (const w of allWires) {
+      const wPts = w.id === wire.id ? curWirePts : w.points;
+      const wCount = Math.floor(wPts.length / 2);
+      const excludedSelfSeg =
+        endpoint === "start" ? 0 : Math.max(0, wCount - 2);
+      for (let j = 0; j < wCount - 1; j++) {
+        if (w.id === wire.id && j === excludedSelfSeg) continue;
+        const ax = wPts[j * 2];
+        const ay = wPts[j * 2 + 1];
+        const bx = wPts[(j + 1) * 2];
+        const by = wPts[(j + 1) * 2 + 1];
+        if (orient === "H") {
+          const isH = Math.abs(ay - by) < EPS2 && Math.abs(ax - bx) > EPS2;
+          if (!isH) continue;
+          const d = Math.abs(coord - ay);
+          if (d <= tol && (!best || d < best.d)) best = { v: ay, d };
+        } else {
+          const isV = Math.abs(ax - bx) < EPS2 && Math.abs(ay - by) > EPS2;
+          if (!isV) continue;
+          const d = Math.abs(coord - ax);
+          if (d <= tol && (!best || d < best.d)) best = { v: ax, d };
+        }
+      }
+
+      // Also snap to point coordinates (endpoints/corners), useful when target is
+      // a corner or wire endpoint rather than a long parallel segment.
+      for (let j = 0; j < wCount; j++) {
+        // Avoid immediate self-lock to the endpoint currently being dragged
+        if (w.id === wire.id) {
+          const selfEndpointIdx = endpoint === "start" ? 0 : wCount - 1;
+          if (j === selfEndpointIdx) continue;
+        }
+        const target = orient === "H" ? wPts[j * 2 + 1] : wPts[j * 2];
+        const d = Math.abs(coord - target);
+        if (d <= tol && (!best || d < best.d)) best = { v: target, d };
+      }
+    }
+    return best ? best.v : coord;
+  };
 
   const moveEndpoint = (
     origPts: number[],
@@ -749,32 +1004,64 @@ function WireSegmentHandles({
     x: number,
     y: number
   ) => {
-    const np = [...origPts];
-    const n = np.length;
+    const n = origPts.length;
+    const snapY = snapEndpointCoord(origPts, endpoint, "H", y, endpointMergeTol);
+    const snapX = snapEndpointCoord(origPts, endpoint, "V", x, endpointMergeTol);
+    const hasHSnap = Math.abs(snapY - y) > 0.001;
+    const hasVSnap = Math.abs(snapX - x) > 0.001;
+
+    const ex = hasVSnap ? snapX : x;
+    const ey = hasHSnap ? snapY : y;
+
+    let candH: number[];
+    let candV: number[];
     if (endpoint === "start") {
-      np[0] = x;
-      np[1] = y;
       if (n >= 4) {
-        const nx = np[2];
-        const ny = np[3];
-        const dx = Math.abs(nx - x);
-        const dy = Math.abs(ny - y);
-        if (dx >= dy) np[3] = y;
-        else np[2] = x;
+        const ax = origPts[2];
+        const ay = origPts[3];
+        const rest = origPts.slice(2);
+        candH = [ex, ey, ax, ey, ...rest];
+        candV = [ex, ey, ex, ay, ...rest];
+      } else {
+        const ax = origPts[n - 2];
+        const ay = origPts[n - 1];
+        candH = [ex, ey, ax, ey, ax, ay];
+        candV = [ex, ey, ex, ay, ax, ay];
       }
     } else {
-      np[n - 2] = x;
-      np[n - 1] = y;
       if (n >= 4) {
-        const px = np[n - 4];
-        const py = np[n - 3];
-        const dx = Math.abs(px - x);
-        const dy = Math.abs(py - y);
-        if (dx >= dy) np[n - 3] = y;
-        else np[n - 4] = x;
+        const ax = origPts[n - 4];
+        const ay = origPts[n - 3];
+        const head = origPts.slice(0, n - 2);
+        candH = [...head, ax, ey, ex, ey];
+        candV = [...head, ex, ay, ex, ey];
+      } else {
+        const ax = origPts[0];
+        const ay = origPts[1];
+        candH = [ax, ay, ax, ey, ex, ey];
+        candV = [ax, ay, ex, ay, ex, ey];
       }
     }
-    return mergeCollinear(ensureOrthogonal(np));
+
+    // Keep actively dragged endpoint fixed so short-segment collapse cannot
+    // pull it away from the current snap target.
+    const lockStart = endpoint === "start" ? true : startBound;
+    const lockEnd = endpoint === "end" ? true : endBound;
+    const normH = normalizeDraggedWire(candH, lockStart, lockEnd, endpointMergeTol);
+    const normV = normalizeDraggedWire(candV, lockStart, lockEnd, endpointMergeTol);
+
+    const polyLen = (arr: number[]) => {
+      let s = 0;
+      for (let i = 0; i + 3 < arr.length; i += 2) {
+        s += Math.abs(arr[i + 2] - arr[i]) + Math.abs(arr[i + 3] - arr[i + 1]);
+      }
+      return s;
+    };
+    const score = (arr: number[]) => arr.length * 100000 + polyLen(arr);
+
+    if (hasHSnap && !hasVSnap) return normH;
+    if (!hasHSnap && hasVSnap) return normV;
+    return score(normH) <= score(normV) ? normH : normV;
   };
 
   const snapBindToPoint = (bind: WireBind | null, wx: number, wy: number) => {
@@ -785,6 +1072,47 @@ function WireSegmentHandles({
     const term = tpl?.terminals.find((t) => t.id === bind.terminalId);
     if (!term) return { x: wx, y: wy };
     return terminalWorld(dev, term.fx, term.fy);
+  };
+
+  const snapToWirePoint = (
+    wx: number,
+    wy: number,
+    excludeIds?: string[]
+  ): { x: number; y: number; wireId: string; t: number } | null => {
+    const segRadius = 14 / scale;
+    const cornerRadius = 20 / scale;
+    let bestCorner: { x: number; y: number; wireId: string; t: number; d: number } | null = null;
+    let bestSeg: { x: number; y: number; wireId: string; t: number; d: number } | null = null;
+    for (const w of allWires) {
+      if (excludeIds?.includes(w.id)) continue;
+      const wPts = w.points;
+
+      for (let i = 0; i < wPts.length; i += 2) {
+        const cx = wPts[i];
+        const cy = wPts[i + 1];
+        const d = Math.hypot(cx - wx, cy - wy);
+        if (d <= cornerRadius && (!bestCorner || d < bestCorner.d)) {
+          const tPoly = wirePolylineT(wPts, cx, cy);
+          bestCorner = { x: cx, y: cy, wireId: w.id, t: tPoly, d };
+        }
+      }
+
+      for (let i = 0; i + 3 < wPts.length; i += 2) {
+        const x1 = wPts[i], y1 = wPts[i + 1], x2 = wPts[i + 2], y2 = wPts[i + 3];
+        const dx = x2 - x1, dy = y2 - y1;
+        const lenSq = dx * dx + dy * dy;
+        if (lenSq < 0.01) continue;
+        const tSeg = Math.max(0, Math.min(1, ((wx - x1) * dx + (wy - y1) * dy) / lenSq));
+        const cx = x1 + tSeg * dx, cy = y1 + tSeg * dy;
+        const d = Math.hypot(cx - wx, cy - wy);
+        if (d <= segRadius && (!bestSeg || d < bestSeg.d)) {
+          const tPoly = wirePolylineT(wPts, cx, cy);
+          bestSeg = { x: cx, y: cy, wireId: w.id, t: tPoly, d };
+        }
+      }
+    }
+    const best = bestCorner ?? bestSeg;
+    return best ? { x: best.x, y: best.y, wireId: best.wireId, t: best.t } : null;
   };
 
   return (
@@ -869,7 +1197,7 @@ function WireSegmentHandles({
                   applySegMove(np, snap.segIdx, "V", sx, snap.aBound, snap.bBound);
                 }
                 // Commit live with immediate merge after snap-to-parallel
-                const live = mergeCollinear(ensureOrthogonal(np));
+                const live = normalizeDraggedWire(np, startBound, endBound);
                 onCommit(live);
                 // Reset Konva offset so Line follows committed pts only
                 node.position({ x: 0, y: 0 });
@@ -877,8 +1205,16 @@ function WireSegmentHandles({
               onDragEnd={(e) => {
                 e.target.position({ x: 0, y: 0 });
                 dragRef.current = null;
-                // Final merge on release
-                onCommit(mergeCollinear(ensureOrthogonal([...pts])));
+                // Finalize from latest store points (avoid overwriting with stale pre-drag props)
+                const latest = useEditorStore.getState().wires.find((x) => x.id === wire.id);
+                if (!latest) return;
+                onCommit(
+                  normalizeDraggedWire(
+                    [...latest.points],
+                    !!latest.startBind,
+                    !!latest.endBind
+                  )
+                );
               }}
             />
 
@@ -955,6 +1291,7 @@ function WireSegmentHandles({
             onDragStart={(e) => {
               if (!isEndpoint) return;
               e.cancelBubble = true;
+              setEndpointSnapHint(null);
               endpointDragRef.current = {
                 origPts: [...pts],
                 endpoint: isStart ? "start" : "end",
@@ -970,8 +1307,14 @@ function WireSegmentHandles({
               const sc = stage.scaleX();
               const wx = (ptr.x - stage.x()) / sc;
               const wy = (ptr.y - stage.y()) / sc;
-              const snap = nearestTerminalBind(wx, wy, devices, templates, 14 / scale);
-              const snappedPoint = snapBindToPoint(snap, wx, wy);
+              const terminalSnap = nearestTerminalBind(wx, wy, devices, templates, 14 / scale);
+              const wireSnap = terminalSnap ? null : snapToWirePoint(wx, wy, [wire.id]);
+              setEndpointSnapHint(terminalSnap ? null : wireSnap ? { x: wireSnap.x, y: wireSnap.y } : null);
+              const snappedPoint = terminalSnap
+                ? snapBindToPoint(terminalSnap, wx, wy)
+                : wireSnap
+                ? { x: wireSnap.x, y: wireSnap.y }
+                : { x: wx, y: wy };
               const endpoint = endpointDragRef.current.endpoint;
               const livePts = moveEndpoint(
                 endpointDragRef.current.origPts,
@@ -979,21 +1322,60 @@ function WireSegmentHandles({
                 snappedPoint.x,
                 snappedPoint.y
               );
-              const bindPatch: Partial<Pick<Wire, "startBind" | "endBind">> =
-                endpoint === "start"
-                  ? { startBind: snap ?? undefined }
-                  : { endBind: snap ?? undefined };
+              const bindPatch: Partial<
+                Pick<Wire, "startBind" | "endBind" | "startWireBind" | "endWireBind">
+              > = endpoint === "start"
+                ? {
+                    startBind: terminalSnap ?? undefined,
+                    startWireBind: terminalSnap
+                      ? undefined
+                      : wireSnap
+                      ? { wireId: wireSnap.wireId, t: wireSnap.t }
+                      : undefined,
+                  }
+                : {
+                    endBind: terminalSnap ?? undefined,
+                    endWireBind: terminalSnap
+                      ? undefined
+                      : wireSnap
+                      ? { wireId: wireSnap.wireId, t: wireSnap.t }
+                      : undefined,
+                  };
               onCommit(livePts, bindPatch);
               node.position({ x: 0, y: 0 });
             }}
             onDragEnd={(e) => {
               e.target.position({ x: 0, y: 0 });
+              setEndpointSnapHint(null);
+              const latest = useEditorStore.getState().wires.find((x) => x.id === wire.id);
+              if (latest) {
+                onCommit(
+                  normalizeDraggedWire(
+                    [...latest.points],
+                    !!latest.startBind,
+                    !!latest.endBind,
+                    endpointMergeTol
+                  )
+                );
+              }
               endpointDragRef.current = null;
               onEndpointDragStateChange?.(false);
             }}
           />
         );
       })}
+
+      {endpointSnapHint && (
+        <Circle
+          x={endpointSnapHint.x}
+          y={endpointSnapHint.y}
+          radius={6 / scale}
+          fill="rgba(37,99,235,0.18)"
+          stroke="#2563eb"
+          strokeWidth={1.5 / scale}
+          listening={false}
+        />
+      )}
     </Group>
   );
 }
@@ -1070,6 +1452,16 @@ function snapCoordToParallel(
       if (d <= tol && (!best || d < best.d)) best = { v: ax, d };
     }
   }
+  for (let j = 0; j < count; j++) {
+    const isAdjToDraggedSeg = j === segIdx || j === segIdx + 1;
+    const isGlobalEndpoint = j === 0 || j === count - 1;
+    // Keep anti-self-stick for interior adjacent points, but allow snapping to
+    // global endpoints (start/end) even when dragged segment is first/last.
+    if (isAdjToDraggedSeg && !isGlobalEndpoint) continue;
+    const target = orient === "H" ? pts[j * 2 + 1] : pts[j * 2];
+    const d = Math.abs(coord - target);
+    if (d <= tol && (!best || d < best.d)) best = { v: target, d };
+  }
   return best ? best.v : coord;
 }
 
@@ -1100,6 +1492,8 @@ export default function DeviceCanvas() {
   const [draftVisual, setDraftVisual] = useState<number[] | null>(null);
   const [dragGuides, setDragGuides] = useState<number[][]>([]);
   const [showTerminalTargets, setShowTerminalTargets] = useState(false);
+  const [pinPreviewSize, setPinPreviewSize] = useState<{ width: number; height: number } | null>(null);
+  const [pinGuideRect, setPinGuideRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [showMiniMap, setShowMiniMap] = useState(false);
   const vFirstRef = useRef(false); // Shift = vertical-first routing
   const draftStartBindRef = useRef<WireBind | null>(null); // terminal the wire starts from
@@ -1109,13 +1503,16 @@ export default function DeviceCanvas() {
   const {
     devices,
     wires,
+    labels,
     templates,
     selectedIds,
     activeTool,
     activeTemplateId,
     draftFixed,
     addDevice,
+    addLabel,
     updateDevice,
+    updateLabel,
     setSelected,
     toggleSelected,
     clearSelected,
@@ -1126,6 +1523,7 @@ export default function DeviceCanvas() {
     cancelDraftWire,
     removeDevice,
     removeWire,
+    removeLabel,
     wireJumps,
     exportPreview,
     exportFrame,
@@ -1181,6 +1579,8 @@ export default function DeviceCanvas() {
           useEditorStore.getState().setTool("select");
         } else if (e.code === "KeyW") {
           useEditorStore.getState().setTool("wire");
+        } else if (e.code === "KeyT") {
+          useEditorStore.getState().setTool("text");
         } else if (e.code === "Space" && !spaceHeld) {
           e.preventDefault();
           spaceHeld = true;
@@ -1200,6 +1600,7 @@ export default function DeviceCanvas() {
         selectedIds.forEach((id) => {
           if (devices.find((d) => d.id === id)) removeDevice(id);
           if (wires.find((w) => w.id === id)) removeWire(id);
+          if (labels.find((l) => l.id === id)) removeLabel(id);
         });
       }
     };
@@ -1227,8 +1628,10 @@ export default function DeviceCanvas() {
     selectedIds,
     devices,
     wires,
+    labels,
     removeDevice,
     removeWire,
+    removeLabel,
   ]);
 
   // Keep a snapshot only once when entering export-frame mode for ESC cancel/restore
@@ -1247,6 +1650,10 @@ export default function DeviceCanvas() {
   useEffect(() => {
     setDragGuides([]);
     if (activeTool !== "select") setShowTerminalTargets(false);
+    if (activeTool !== "pin") {
+      setPinGuideRect(null);
+      setPinPreviewSize(null);
+    }
     if (activeTool !== "wire") {
       setDraftVisual(null);
       draftStartBindRef.current = null;
@@ -1258,6 +1665,30 @@ export default function DeviceCanvas() {
       selStart.current = null;
     }
   }, [activeTool, cancelDraftWire]);
+
+  // Prepare pin preview size from selected template image
+  useEffect(() => {
+    if (activeTool !== "pin" || !activeTemplateId) {
+      setPinPreviewSize(null);
+      setPinGuideRect(null);
+      return;
+    }
+    const tpl = templates.find((t) => t.id === activeTemplateId);
+    if (!tpl) {
+      setPinPreviewSize(null);
+      setPinGuideRect(null);
+      return;
+    }
+    const img = new window.Image();
+    img.src = tpl.src;
+    img.onload = () => {
+      const maxDim = 160;
+      const ratio = img.width / img.height || 1;
+      const width = ratio >= 1 ? maxDim : maxDim * ratio;
+      const height = ratio >= 1 ? maxDim / ratio : maxDim;
+      setPinPreviewSize({ width, height });
+    };
+  }, [activeTool, activeTemplateId, templates]);
 
   // Attach transformer to selected device nodes
   useEffect(() => {
@@ -1341,6 +1772,13 @@ export default function DeviceCanvas() {
         maxY = Math.max(maxY, w.points[i + 1]);
       }
     }
+    for (const l of labels) {
+      const m = labelMetrics(l);
+      minX = Math.min(minX, l.x);
+      minY = Math.min(minY, l.y);
+      maxX = Math.max(maxX, l.x + m.width);
+      maxY = Math.max(maxY, l.y + m.height);
+    }
 
     if (!isFinite(minX)) return null;
     return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
@@ -1385,7 +1823,7 @@ export default function DeviceCanvas() {
       height: height + pad * 2,
       viewport,
     };
-  }, [devices, wires, view, size]);
+  }, [devices, wires, labels, view, size]);
 
   // Ensure export frame tool is always usable (even with no objects selected/available)
   useEffect(() => {
@@ -1417,7 +1855,7 @@ export default function DeviceCanvas() {
       width: fw,
       height: fh,
     });
-  }, [activeTool, exportPreview, exportFrame, size, view, setExportFrame, devices, wires]);
+  }, [activeTool, exportPreview, exportFrame, size, view, setExportFrame, devices, wires, labels]);
 
   const snapDevicePosition = (device: Device, x: number, y: number) => {
     const threshold = 8 / view.scale;
@@ -1500,6 +1938,25 @@ export default function DeviceCanvas() {
         else setSelected([tid]);
         return;
       }
+      if (tid && labels.some((x) => x.id === tid)) {
+        if (e.evt.shiftKey) toggleSelected(tid);
+        else setSelected([tid]);
+        return;
+      }
+    }
+
+    if (activeTool === "text" && isStageHit) {
+      const id = uid();
+      addLabel({
+        id,
+        text: "Label",
+        x: w.x,
+        y: w.y,
+        fontSize: 18,
+        color: "#111827",
+      });
+      setSelected([id]);
+      return;
     }
 
     if (activeTool === "pin" && activeTemplateId && isStageHit) {
@@ -1584,6 +2041,14 @@ export default function DeviceCanvas() {
 
   const onStageMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
     const w = getWorld();
+    if (activeTool === "pin" && activeTemplateId && pinPreviewSize) {
+      setPinGuideRect({
+        x: w.x - pinPreviewSize.width / 2,
+        y: w.y - pinPreviewSize.height / 2,
+        width: pinPreviewSize.width,
+        height: pinPreviewSize.height,
+      });
+    }
     if (activeTool === "wire" && draftFixed && draftFixed.length >= 2) {
       const snap = snapToTerminal(w.x, w.y);
       const wireSnap = snap ? null : snapToWire(w.x, w.y);
@@ -1651,7 +2116,19 @@ export default function DeviceCanvas() {
           })
           .map((w) => w.id);
 
-        setSelected([...deviceIds, ...wireIds]);
+        const labelIds = labels
+          .filter((l) => {
+            const m = labelMetrics(l);
+            return (
+              l.x < selBox.x + selBox.w &&
+              l.x + m.width > selBox.x &&
+              l.y < selBox.y + selBox.h &&
+              l.y + m.height > selBox.y
+            );
+          })
+          .map((l) => l.id);
+
+        setSelected([...deviceIds, ...wireIds, ...labelIds]);
       }
       setSelBox(null);
       selStart.current = null;
@@ -1693,11 +2170,23 @@ export default function DeviceCanvas() {
   /** Snap to nearest point on any wire segment; returns wireId + parametric t */
   const snapToWire = useMemo(
     () => (wx: number, wy: number, excludeIds?: string[]): { x: number; y: number; wireId: string; t: number } | null => {
-      const radius = 10 / view.scale;
-      let best: { x: number; y: number; wireId: string; t: number; d: number } | null = null;
+      const segRadius = 10 / view.scale;
+      const cornerRadius = 16 / view.scale;
+      let bestCorner: { x: number; y: number; wireId: string; t: number; d: number } | null = null;
+      let bestSeg: { x: number; y: number; wireId: string; t: number; d: number } | null = null;
       for (const w of wires) {
         if (excludeIds?.includes(w.id)) continue;
         const pts = w.points;
+
+        for (let i = 0; i < pts.length; i += 2) {
+          const cx = pts[i], cy = pts[i + 1];
+          const d = Math.hypot(cx - wx, cy - wy);
+          if (d <= cornerRadius && (!bestCorner || d < bestCorner.d)) {
+            const tPoly = wirePolylineT(pts, cx, cy);
+            bestCorner = { x: cx, y: cy, wireId: w.id, t: tPoly, d };
+          }
+        }
+
         for (let i = 0; i + 3 < pts.length; i += 2) {
           const x1 = pts[i], y1 = pts[i + 1], x2 = pts[i + 2], y2 = pts[i + 3];
           const dx = x2 - x1, dy = y2 - y1;
@@ -1706,12 +2195,13 @@ export default function DeviceCanvas() {
           const tSeg = Math.max(0, Math.min(1, ((wx - x1) * dx + (wy - y1) * dy) / lenSq));
           const cx = x1 + tSeg * dx, cy = y1 + tSeg * dy;
           const d = Math.hypot(cx - wx, cy - wy);
-          if (d <= radius && (!best || d < best.d)) {
+          if (d <= segRadius && (!bestSeg || d < bestSeg.d)) {
             const tPoly = wirePolylineT(pts, cx, cy);
-            best = { x: cx, y: cy, wireId: w.id, t: tPoly, d };
+            bestSeg = { x: cx, y: cy, wireId: w.id, t: tPoly, d };
           }
         }
       }
+      const best = bestCorner ?? bestSeg;
       return best ? { x: best.x, y: best.y, wireId: best.wireId, t: best.t } : null;
     },
     [wires, view.scale]
@@ -1724,11 +2214,49 @@ export default function DeviceCanvas() {
       ? "copy"
       : activeTool === "wire"
       ? "crosshair"
+      : activeTool === "text"
+      ? "crosshair"
       : activeTool === "exportFrame"
       ? "crosshair"
       : activeTool === "terminal"
       ? "cell"
       : "default";
+
+  const renderedWires = useMemo(() => {
+    const map = new Map<string, Wire>();
+    for (const w of wires) {
+      map.set(w.id, { ...w, points: [...w.points] });
+    }
+
+    // Multi-pass so chained wire-binds settle to stable display points.
+    for (let pass = 0; pass < 3; pass++) {
+      for (const w of wires) {
+        let pts = [...(map.get(w.id)?.points ?? w.points)];
+
+        if (w.startWireBind) {
+          const src = map.get(w.startWireBind.wireId);
+          if (src) {
+            const p = computePointOnWire(src.points, w.startWireBind.t);
+            pts = [p.x, p.y, ...pts.slice(2)];
+            pts = keepEndpointOrthogonal(pts, "start", w.vFirst);
+          }
+        }
+
+        if (w.endWireBind) {
+          const src = map.get(w.endWireBind.wireId);
+          if (src) {
+            const p = computePointOnWire(src.points, w.endWireBind.t);
+            pts = [...pts.slice(0, -2), p.x, p.y];
+            pts = keepEndpointOrthogonal(pts, "end", w.vFirst);
+          }
+        }
+
+        map.set(w.id, { ...w, points: pts });
+      }
+    }
+
+    return wires.map((w) => map.get(w.id) ?? w);
+  }, [wires]);
 
   return (
     <div
@@ -1755,6 +2283,9 @@ export default function DeviceCanvas() {
         onMouseMove={onStageMouseMove}
         onMouseUp={onStageMouseUp}
         onDblClick={onStageDblClick}
+        onMouseLeave={() => {
+          if (activeTool === "pin") setPinGuideRect(null);
+        }}
       >
         {/* Background grid */}
         <Layer id="grid-layer" listening={false}>
@@ -1781,6 +2312,10 @@ export default function DeviceCanvas() {
               onSelect={(e) => {
                 if (activeTool === "terminal") {
                   e.cancelBubble = true;
+                  return;
+                }
+                if (activeTool === "pan") {
+                  // allow Stage draggable to pan even when clicking on a device
                   return;
                 }
                 if (activeTool === "wire") {
@@ -1883,33 +2418,60 @@ export default function DeviceCanvas() {
             />
           ))}
 
+          {labels.map((l) => (
+            <LabelNode
+              key={l.id}
+              label={l}
+              activeTool={activeTool}
+              selected={selectedIds.includes(l.id)}
+              onSelect={(e) => {
+                if (activeTool === "pan") return;
+                if (activeTool !== "select") {
+                  e.cancelBubble = true;
+                  return;
+                }
+                e.cancelBubble = true;
+                if (!e.evt.shiftKey && selectedIds.length > 1 && selectedIds.includes(l.id)) {
+                  return;
+                }
+                if (e.evt.shiftKey) toggleSelected(l.id);
+                else setSelected([l.id]);
+              }}
+              onChange={(patch) => updateLabel(l.id, patch)}
+              onEdit={() => {
+                const next = window.prompt("ข้อความ Label", l.text);
+                if (next === null) return;
+                updateLabel(l.id, { text: next || "Label" });
+              }}
+            />
+          ))}
+
           {/* Wires อยู่เหนือรูปอุปกรณ์ */}
           {/* Wires อยู่เหนือรูปอุปกรณ์ */}
-          {wires.map((w, wi) => {
-            // Resolve wire-tap bound endpoints dynamically
-            let pts = w.points;
-            if (w.startWireBind) {
-              const src = wires.find((x) => x.id === w.startWireBind!.wireId);
-              if (src) {
-                const p = computePointOnWire(src.points, w.startWireBind.t);
-                pts = [p.x, p.y, ...pts.slice(2)];
+          {renderedWires.map((w, wi) => {
+            const sharpCorners = renderedWires.flatMap((ow) => {
+              if (ow.id === w.id) return [] as { x: number; y: number }[];
+              const out: { x: number; y: number }[] = [];
+              if (ow.startWireBind?.wireId === w.id) {
+                out.push(computePointOnWire(w.points, ow.startWireBind.t));
               }
-            }
-            if (w.endWireBind) {
-              const src = wires.find((x) => x.id === w.endWireBind!.wireId);
-              if (src) {
-                const p = computePointOnWire(src.points, w.endWireBind.t);
-                pts = [...pts.slice(0, -2), p.x, p.y];
+              if (ow.endWireBind?.wireId === w.id) {
+                out.push(computePointOnWire(w.points, ow.endWireBind.t));
               }
-            }
-            const resolvedWire = pts === w.points ? w : { ...w, points: pts };
+              return out;
+            });
             return (
               <WireNode
                 key={w.id}
-                wire={resolvedWire}
+                wire={w}
                 selected={selectedIds.includes(w.id)}
-                jumpPoints={wireJumps ? computeJumpPoints(resolvedWire, wi, wires) : undefined}
+                jumpPoints={wireJumps ? computeJumpPoints(w, wi, renderedWires) : undefined}
+                sharpCorners={sharpCorners}
                 onSelect={(e) => {
+                  if (activeTool === "pan") {
+                    // allow Stage draggable to pan even when clicking on a wire
+                    return;
+                  }
                   if (activeTool === "wire") {
                     // ไม่ cancelBubble — ปล่อยให้ stage.onMouseDown จัดการผ่าน snapToWire
                     return;
@@ -1979,10 +2541,10 @@ export default function DeviceCanvas() {
           {/* T-junction & endpoint dots */}
           {(() => {
             const dots: { x: number; y: number; color: string }[] = [];
-            for (const w of wires) {
+            for (const w of renderedWires) {
               // startWireBind dot
               if (w.startWireBind) {
-                const src = wires.find((x) => x.id === w.startWireBind!.wireId);
+                const src = renderedWires.find((x) => x.id === w.startWireBind!.wireId);
                 if (src) {
                   const p = computePointOnWire(src.points, w.startWireBind.t);
                   dots.push({ x: p.x, y: p.y, color: w.color });
@@ -1990,7 +2552,7 @@ export default function DeviceCanvas() {
               }
               // endWireBind dot
               if (w.endWireBind) {
-                const src = wires.find((x) => x.id === w.endWireBind!.wireId);
+                const src = renderedWires.find((x) => x.id === w.endWireBind!.wireId);
                 if (src) {
                   const p = computePointOnWire(src.points, w.endWireBind.t);
                   dots.push({ x: p.x, y: p.y, color: w.color });
@@ -2013,20 +2575,24 @@ export default function DeviceCanvas() {
 
           {/* Wire waypoint handles (only when selected + select tool) */}
           {activeTool === "select" &&
-            wires
+            renderedWires
               .filter((w) => selectedIds.includes(w.id))
               .map((w) => (
                 <WireSegmentHandles
                   key={`h:${w.id}`}
                   wire={w}
+                  allWires={renderedWires}
                   scale={view.scale}
                   devices={devices}
                   templates={templates}
                   onEndpointDragStateChange={setShowTerminalTargets}
                   onCommit={(pts, bindPatch) => {
+                    const baseWire =
+                      useEditorStore.getState().wires.find((x) => x.id === w.id) ?? w;
+                    const draftWire = bindPatch ? { ...baseWire, ...bindPatch } : baseWire;
                     const resolved = resolveAndLockWireEndpoints(
                       pts,
-                      bindPatch ? { ...w, ...bindPatch } : w,
+                      draftWire,
                       useEditorStore.getState().devices,
                       useEditorStore.getState().templates
                     );
@@ -2034,6 +2600,8 @@ export default function DeviceCanvas() {
                       points: mergeCollinear(ensureOrthogonal(resolved.points)),
                       startBind: resolved.startBind,
                       endBind: resolved.endBind,
+                      startWireBind: draftWire.startWireBind,
+                      endWireBind: draftWire.endWireBind,
                     });
                   }}
                   onDeleteCorner={(idx) => {
@@ -2097,6 +2665,20 @@ export default function DeviceCanvas() {
             />
           )}
 
+          {activeTool === "pin" && pinGuideRect && (
+            <Rect
+              x={pinGuideRect.x}
+              y={pinGuideRect.y}
+              width={pinGuideRect.width}
+              height={pinGuideRect.height}
+              fill="rgba(37,99,235,0.08)"
+              stroke="#2563eb"
+              strokeWidth={1 / view.scale}
+              dash={[6 / view.scale, 4 / view.scale]}
+              listening={false}
+            />
+          )}
+
           <Transformer
             ref={transformerRef}
             rotateEnabled
@@ -2109,7 +2691,7 @@ export default function DeviceCanvas() {
 
         {/* Export preview / frame bounding box */}
         {(exportPreview || activeTool === "exportFrame" || !!exportFrame) && (() => {
-          const ids = exportPreview?.ids ?? [...devices.map((d) => d.id), ...wires.map((w) => w.id)];
+          const ids = exportPreview?.ids ?? [...devices.map((d) => d.id), ...wires.map((w) => w.id), ...labels.map((l) => l.id)];
           const padding = exportPreview?.padding ?? 0;
           const canEditFrame = activeTool === "exportFrame" || !!exportPreview;
           const initialFrame = (() => {
@@ -2127,6 +2709,13 @@ export default function DeviceCanvas() {
                   minX = Math.min(minX, wire.points[i]); maxX = Math.max(maxX, wire.points[i]);
                   minY = Math.min(minY, wire.points[i + 1]); maxY = Math.max(maxY, wire.points[i + 1]);
                 }
+                continue;
+              }
+              const label = labels.find((l) => l.id === id);
+              if (label) {
+                const m = labelMetrics(label);
+                minX = Math.min(minX, label.x); minY = Math.min(minY, label.y);
+                maxX = Math.max(maxX, label.x + m.width); maxY = Math.max(maxY, label.y + m.height);
               }
             }
             if (!isFinite(minX)) return null;
@@ -2428,6 +3017,7 @@ export default function DeviceCanvas() {
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/60 px-3 py-1.5 text-xs text-white">
         {activeTool === "wire" && "คลิกพื้นที่ว่าง = เพิ่มจุดหัก · คลิก Terminal = จบสาย · Double-click = จบลอย · Shift = สลับแนว · ESC ยกเลิก"}
         {activeTool === "pin" && "คลิกบน Canvas เพื่อวางอุปกรณ์"}
+        {activeTool === "text" && "คลิกบน Canvas เพื่อเพิ่ม Label · เลือกแล้วลากเพื่อย้าย · ดับเบิลคลิกเพื่อแก้ข้อความ"}
         {activeTool === "terminal" &&
           "คลิกบนอุปกรณ์เพื่อเพิ่มจุดต่อสาย · คลิกจุดเดิมเพื่อลบ"}
         {activeTool === "select" &&
@@ -2443,7 +3033,7 @@ export default function DeviceCanvas() {
           className="flex h-9 items-center justify-center rounded-md border border-zinc-300 bg-white px-3 text-xs font-medium text-zinc-700 shadow-sm hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
           title="เปิด/ปิด Mini Map"
         >
-          🗺
+          <MapIcon size={16} />
         </button>
         <div className="flex overflow-hidden rounded-md border border-zinc-300 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
           <button
@@ -2451,21 +3041,21 @@ export default function DeviceCanvas() {
             className="flex h-9 w-10 items-center justify-center text-lg text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
             title="Zoom Out"
           >
-            −
+            <Minus size={16} />
           </button>
           <button
             onClick={centerAllObjects}
             className="flex h-9 w-10 items-center justify-center border-x border-zinc-300 text-sm font-semibold text-zinc-700 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-200 dark:hover:bg-zinc-800"
             title="จัดกึ่งกลาง Object ทั้งหมด"
           >
-            O
+            <LocateFixed size={16} />
           </button>
           <button
             onClick={() => zoomAtCenter(view.scale * 1.2)}
             className="flex h-9 w-10 items-center justify-center text-xl text-zinc-700 hover:bg-zinc-100 dark:text-zinc-200 dark:hover:bg-zinc-800"
             title="Zoom In"
           >
-            +
+            <Plus size={16} />
           </button>
         </div>
       </div>
@@ -2530,6 +3120,92 @@ export default function DeviceCanvas() {
 }
 
 type AlignUpdate = { id: string; patch: Partial<Device> };
+
+function AlignLeftIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="4" y="3" width="8" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="4" y="6.8" width="5.5" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="4" y="10.6" width="7" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function AlignCenterHIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M8 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="4" y="3" width="8" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="5.3" y="6.8" width="5.4" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="4.5" y="10.6" width="7" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function AlignRightIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M14 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="4" y="3" width="8" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="6.5" y="6.8" width="5.5" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="5" y="10.6" width="7" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function AlignTopIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 2H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="3" y="4" width="2.4" height="8" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="6.8" y="4" width="2.4" height="5.5" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="10.6" y="4" width="2.4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function AlignCenterVIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 8H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="3" y="4" width="2.4" height="8" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="6.8" y="5.3" width="2.4" height="5.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="10.6" y="4.5" width="2.4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function AlignBottomIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 14H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="3" y="4" width="2.4" height="8" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="6.8" y="6.5" width="2.4" height="5.5" rx="1" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="10.6" y="5" width="2.4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function DistributeHIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 2V14M14 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="4.2" y="4" width="2.4" height="8" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="9.4" y="5.2" width="2.4" height="5.6" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
+
+function DistributeVIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <path d="M2 2H14M2 14H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="4" y="4.2" width="8" height="2.4" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
+      <rect x="5.2" y="9.4" width="5.6" height="2.4" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
+    </svg>
+  );
+}
 
 function AlignmentToolbar({
   devices,
@@ -2597,25 +3273,22 @@ function AlignmentToolbar({
   const btn = "flex h-7 w-7 items-center justify-center rounded text-xs hover:bg-zinc-200 dark:hover:bg-zinc-700";
 
   return (
-    <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-2 py-1 shadow-md dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-1.5 py-1 shadow-md dark:border-zinc-700 dark:bg-zinc-900">
       <div className="flex items-center gap-0.5 text-zinc-700 dark:text-zinc-200">
-        <span className="px-1 text-[10px] uppercase text-zinc-400">Align</span>
-        <button onClick={alignLeft} className={btn} title="ชิดซ้าย">⬅︎</button>
-        <button onClick={alignCenterH} className={btn} title="จัดกึ่งกลางแนวนอน">⇔</button>
-        <button onClick={alignRight} className={btn} title="ชิดขวา">➡︎</button>
+        <button onClick={alignLeft} className={btn} title="ชิดซ้าย"><AlignLeftIcon /></button>
+        <button onClick={alignCenterH} className={btn} title="จัดกึ่งกลางแนวนอน"><AlignCenterHIcon /></button>
+        <button onClick={alignRight} className={btn} title="ชิดขวา"><AlignRightIcon /></button>
         <span className="mx-1 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
-        <button onClick={alignTop} className={btn} title="ชิดบน">⬆︎</button>
-        <button onClick={alignCenterV} className={btn} title="จัดกึ่งกลางแนวตั้ง">⇕</button>
-        <button onClick={alignBottom} className={btn} title="ชิดล่าง">⬇︎</button>
+        <button onClick={alignTop} className={btn} title="ชิดบน"><AlignTopIcon /></button>
+        <button onClick={alignCenterV} className={btn} title="จัดกึ่งกลางแนวตั้ง"><AlignCenterVIcon /></button>
+        <button onClick={alignBottom} className={btn} title="ชิดล่าง"><AlignBottomIcon /></button>
         {devices.length >= 3 && (
           <>
             <span className="mx-1 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
-            <span className="px-1 text-[10px] uppercase text-zinc-400">Distribute</span>
-            <button onClick={distributeH} className={btn} title="เฉลี่ยแนวนอน">⇿</button>
-            <button onClick={distributeV} className={btn} title="เฉลี่ยแนวตั้ง">⇳</button>
+            <button onClick={distributeH} className={btn} title="เฉลี่ยแนวนอน"><DistributeHIcon /></button>
+            <button onClick={distributeV} className={btn} title="เฉลี่ยแนวตั้ง"><DistributeVIcon /></button>
           </>
         )}
-        <span className="ml-1 text-[10px] text-zinc-400">({devices.length} ชิ้น)</span>
       </div>
     </div>
   );

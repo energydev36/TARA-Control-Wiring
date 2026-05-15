@@ -6,6 +6,7 @@ export interface IProject {
   templates: object[];
   devices: object[];
   wires: object[];
+  labels: object[];
   categories: string[];
   wireColor: string;
   wireThickness: number;
@@ -20,6 +21,7 @@ const ProjectSchema = new Schema<IProject>(
     templates: { type: [Schema.Types.Mixed], default: [] },
     devices: { type: [Schema.Types.Mixed], default: [] },
     wires: { type: [Schema.Types.Mixed], default: [] },
+    labels: { type: [Schema.Types.Mixed], default: [] },
     categories: { type: [String], default: [] },
     wireColor: { type: String, default: "#dc2626" },
     wireThickness: { type: Number, default: 2 },

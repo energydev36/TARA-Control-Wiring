@@ -67,6 +67,7 @@ export function DbSync() {
         if (!data) return;
         store.setField("devices", data.devices ?? []);
         store.setField("wires", data.wires ?? []);
+        store.setField("labels", data.labels ?? []);
         if (data.wireColor) store.setWireColor(data.wireColor);
         if (typeof data.wireThickness === "number") store.setWireThickness(data.wireThickness);
         if (typeof data.wireJumps === "boolean") store.setWireJumps(data.wireJumps);
@@ -120,6 +121,7 @@ export function DbSync() {
       JSON.stringify({
         d: s.devices,
         w: s.wires,
+        l: s.labels,
         wc: s.wireColor,
         wt: s.wireThickness,
         wj: s.wireJumps,
@@ -136,7 +138,7 @@ export function DbSync() {
       useEditorStore.getState().setDbStatus("saving");
 
       projectTimer.current = setTimeout(() => {
-        const { devices, wires, wireColor, wireThickness, wireJumps,
+        const { devices, wires, labels, wireColor, wireThickness, wireJumps,
           currentProjectId, currentProjectName } = useEditorStore.getState();
         fetch("/api/project", {
           method: "POST",
@@ -146,6 +148,7 @@ export function DbSync() {
             name: currentProjectName,
             devices,
             wires,
+            labels,
             wireColor,
             wireThickness,
             wireJumps,

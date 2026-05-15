@@ -29,7 +29,7 @@ function mergeCollinearStore(pts: number[]): number[] {
   return out;
 }
 
-export type Tool = "select" | "pin" | "wire" | "pan" | "terminal" | "exportFrame";
+export type Tool = "select" | "pin" | "wire" | "text" | "pan" | "terminal" | "exportFrame";
 
 export type Terminal = {
   id: string;
@@ -76,10 +76,20 @@ export type Wire = {
   vFirst?: boolean;
 };
 
+export type CanvasLabel = {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  fontSize: number;
+  color: string;
+};
+
 type State = {
   templates: DeviceTemplate[];
   devices: Device[];
   wires: Wire[];
+  labels: CanvasLabel[];
   categories: string[];
 
   activeTool: Tool;
@@ -123,6 +133,11 @@ type State = {
   updateWire: (id: string, patch: Partial<Wire>) => void;
   removeWire: (id: string) => void;
 
+  // Labels
+  addLabel: (l: CanvasLabel) => void;
+  updateLabel: (id: string, patch: Partial<CanvasLabel>) => void;
+  removeLabel: (id: string) => void;
+
   // Tool / selection
   setTool: (t: Tool) => void;
   setWireColor: (c: string) => void;
@@ -158,6 +173,7 @@ export const useEditorStore = create<State>()(
   templates: [],
   devices: [],
   wires: [],
+  labels: [],
   categories: [],
 
   activeTool: "select",
@@ -266,6 +282,17 @@ export const useEditorStore = create<State>()(
       selectedIds: s.selectedIds.filter((sid) => sid !== id),
     })),
 
+  addLabel: (l) => set((s) => ({ labels: [...s.labels, l] })),
+  updateLabel: (id, patch) =>
+    set((s) => ({
+      labels: s.labels.map((l) => (l.id === id ? { ...l, ...patch } : l)),
+    })),
+  removeLabel: (id) =>
+    set((s) => ({
+      labels: s.labels.filter((l) => l.id !== id),
+      selectedIds: s.selectedIds.filter((sid) => sid !== id),
+    })),
+
   setTool: (t) =>
     set({
       activeTool: t,
@@ -290,6 +317,7 @@ export const useEditorStore = create<State>()(
     set({
       devices: [],
       wires: [],
+      labels: [],
       selectedIds: [],
       activeTemplateId: null,
       draftFixed: null,
@@ -308,6 +336,7 @@ export const useEditorStore = create<State>()(
       partialize: (s) => ({
         devices: s.devices,
         wires: s.wires,
+        labels: s.labels,
         categories: s.categories,
         wireColor: s.wireColor,
         wireThickness: s.wireThickness,

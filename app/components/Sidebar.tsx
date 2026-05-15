@@ -17,11 +17,13 @@ import {
   ChevronDown,
   ChevronRight,
   FolderOpen,
+  Type,
 } from "lucide-react";
 
 const tools: { id: Tool; label: string; icon: React.ReactNode }[] = [
   { id: "select", label: "Select", icon: <MousePointer2 size={16} /> },
   { id: "wire", label: "Wire", icon: <Spline size={16} /> },
+  { id: "text", label: "Text", icon: <Type size={16} /> },
   { id: "exportFrame", label: "Export Frame", icon: <Crop size={16} /> },
 ];
 
@@ -49,6 +51,7 @@ export default function Sidebar() {
   const [editCatDraft, setEditCatDraft] = useState("");
   const [collapsedCats, setCollapsedCats] = useState<Set<string>>(new Set());
   const [showProjectManager, setShowProjectManager] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
 
   const {
     templates,
@@ -67,8 +70,10 @@ export default function Sidebar() {
     selectedIds,
     devices,
     wires,
+    labels,
     removeDevice,
     removeWire,
+    removeLabel,
     updateWire,
     addTemplateTerminal,
     updateTemplateTerminal,
@@ -85,7 +90,7 @@ export default function Sidebar() {
   const handleToolClick = (tool: Tool) => {
     setTool(tool);
     if (tool === "exportFrame") {
-      const ids = [...devices.map((d) => d.id), ...wires.map((w) => w.id)];
+      const ids = [...devices.map((d) => d.id), ...wires.map((w) => w.id), ...labels.map((l) => l.id)];
       setExportPreview({ ids, padding: 0 });
       return;
     }
@@ -127,6 +132,7 @@ export default function Sidebar() {
     selectedIds.forEach((id) => {
       if (devices.find((d) => d.id === id)) removeDevice(id);
       if (wires.find((w) => w.id === id)) removeWire(id);
+      if (labels.find((l) => l.id === id)) removeLabel(id);
     });
   };
 
@@ -175,60 +181,62 @@ export default function Sidebar() {
       </section>
 
       {/* Wire settings */}
-      <section className="border-b border-zinc-200 p-3 dark:border-zinc-800">
-        <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">
-          Wire
-        </h2>
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {presetColors.map((c) => (
-            <button
-              key={c}
-              onClick={() => setWireColor(c)}
-              className={`h-6 w-6 rounded-full border ${
-                wireColor === c
-                  ? "ring-2 ring-blue-500 ring-offset-1"
-                  : "border-zinc-300"
-              }`}
-              style={{ backgroundColor: c }}
-              title={c}
-            />
-          ))}
-          <input
-            type="color"
-            value={wireColor}
-            onChange={(e) => setWireColor(e.target.value)}
-            className="h-6 w-6 cursor-pointer rounded-full border border-zinc-300 bg-transparent"
-            title="Custom color"
-          />
-        </div>
-        <label className="flex items-center gap-2 text-xs">
-          <span className="text-zinc-500">Thickness</span>
-          <input
-            type="range"
-            min={1}
-            max={10}
-            value={wireThickness}
-            onChange={(e) => setWireThickness(Number(e.target.value))}
-            className="flex-1"
-          />
-          <span className="w-6 text-right tabular-nums">{wireThickness}</span>
-        </label>
-        <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs select-none">
-          <div
-            onClick={() => setWireJumps(!wireJumps)}
-            className={`relative h-4 w-8 rounded-full transition-colors ${
-              wireJumps ? "bg-blue-500" : "bg-zinc-300 dark:bg-zinc-600"
-            }`}
-          >
-            <span
-              className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
-                wireJumps ? "translate-x-4" : "translate-x-0.5"
-              }`}
+      {activeTool === "wire" && (
+        <section className="border-b border-zinc-200 p-3 dark:border-zinc-800">
+          <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">
+            Wire
+          </h2>
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {presetColors.map((c) => (
+              <button
+                key={c}
+                onClick={() => setWireColor(c)}
+                className={`h-6 w-6 rounded-full border ${
+                  wireColor === c
+                    ? "ring-2 ring-blue-500 ring-offset-1"
+                    : "border-zinc-300"
+                }`}
+                style={{ backgroundColor: c }}
+                title={c}
+              />
+            ))}
+            <input
+              type="color"
+              value={wireColor}
+              onChange={(e) => setWireColor(e.target.value)}
+              className="h-6 w-6 cursor-pointer rounded-full border border-zinc-300 bg-transparent"
+              title="Custom color"
             />
           </div>
-          <span className="text-zinc-600 dark:text-zinc-400">Wire Jumps</span>
-        </label>
-      </section>
+          <label className="flex items-center gap-2 text-xs">
+            <span className="text-zinc-500">Thickness</span>
+            <input
+              type="range"
+              min={1}
+              max={10}
+              value={wireThickness}
+              onChange={(e) => setWireThickness(Number(e.target.value))}
+              className="flex-1"
+            />
+            <span className="w-6 text-right tabular-nums">{wireThickness}</span>
+          </label>
+          <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs select-none">
+            <div
+              onClick={() => setWireJumps(!wireJumps)}
+              className={`relative h-4 w-8 rounded-full transition-colors ${
+                wireJumps ? "bg-blue-500" : "bg-zinc-300 dark:bg-zinc-600"
+              }`}
+            >
+              <span
+                className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${
+                  wireJumps ? "translate-x-4" : "translate-x-0.5"
+                }`}
+              />
+            </div>
+            <span className="text-zinc-600 dark:text-zinc-400">Wire Jumps</span>
+          </label>
+        </section>
+      )}
 
       {/* Selected wire properties */}
       {(() => {
@@ -314,26 +322,50 @@ export default function Sidebar() {
           </div>
         )}
 
-        {/* Category filter tabs */}
-        <div className="flex flex-wrap gap-1 px-3 py-2">
-          <button onClick={() => setActiveCategory(null)}
-            className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors ${activeCategory === null ? "bg-blue-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"}`}>
-            ทั้งหมด ({templates.length})
-          </button>
-          {categories.map((cat) => (
-            <button key={cat} onClick={() => setActiveCategory(cat === activeCategory ? null : cat)}
-              className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium transition-colors ${activeCategory === cat ? "bg-blue-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300"}`}>
-              {cat} ({templates.filter((tpl) => tpl.category === cat).length})
-            </button>
-          ))}
+        {/* Category filter dropdown */}
+        <div className="px-3 py-2">
+          <label className="mb-1 block text-[11px] font-medium text-zinc-500">หมวดหมู่</label>
+          <select
+            value={activeCategory ?? ""}
+            onChange={(e) => setActiveCategory(e.target.value || null)}
+            className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+          >
+            <option value="">ทั้งหมด ({templates.length})</option>
+            {categories.map((cat) => (
+              <option key={cat} value={cat}>
+                {cat} ({templates.filter((tpl) => tpl.category === cat).length})
+              </option>
+            ))}
+          </select>
+          <label className="mb-1 mt-2 block text-[11px] font-medium text-zinc-500">ค้นหาชื่ออุปกรณ์</label>
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="พิมพ์ชื่ออุปกรณ์..."
+            className="w-full rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-xs text-zinc-700 placeholder:text-zinc-400 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200"
+          />
         </div>
 
         {/* Template list */}
         <div className="min-h-0 flex-1 overflow-y-auto">
           {(() => {
-            const filtered = activeCategory ? templates.filter((tpl) => tpl.category === activeCategory) : templates;
+            const q = searchTerm.trim().toLowerCase();
+            const filteredByCategory = activeCategory
+              ? templates.filter((tpl) => tpl.category === activeCategory)
+              : templates;
+            const filtered = filteredByCategory.filter(
+              (tpl) => !q || tpl.name.toLowerCase().includes(q)
+            );
             if (filtered.length === 0) {
-              return <div className="py-6 text-center text-xs text-zinc-400">{activeCategory ? `ยังไม่มีอุปกรณ์ในหมวด "${activeCategory}"` : "อัปโหลดรูปอุปกรณ์เพื่อเริ่มต้น"}</div>;
+              if (templates.length === 0) {
+                return <div className="py-6 text-center text-xs text-zinc-400">อัปโหลดรูปอุปกรณ์เพื่อเริ่มต้น</div>;
+              }
+              return (
+                <div className="py-6 text-center text-xs text-zinc-400">
+                  ไม่พบอุปกรณ์ที่ตรงกับคำค้นหา
+                </div>
+              );
             }
             if (activeCategory) {
               return (
@@ -347,8 +379,10 @@ export default function Sidebar() {
               );
             }
             // Grouped view
-            const uncategorized = templates.filter((tpl) => !tpl.category);
-            const groups: { name: string; items: typeof templates }[] = categories.map((c) => ({ name: c, items: templates.filter((tpl) => tpl.category === c) }));
+            const uncategorized = filtered.filter((tpl) => !tpl.category);
+            const groups: { name: string; items: typeof templates }[] = categories
+              .map((c) => ({ name: c, items: filtered.filter((tpl) => tpl.category === c) }))
+              .filter((g) => g.items.length > 0);
             if (uncategorized.length > 0) groups.push({ name: "__none__", items: uncategorized });
             return (
               <div className="pb-2">
@@ -630,6 +664,9 @@ function TerminalEditorModal({
 }) {
   const imgWrapRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef<string | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const suppressNextWrapClickRef = useRef(false);
+  const [snapGuide, setSnapGuide] = useState<{ fx?: number; fy?: number } | null>(null);
   const [cropMode, setCropMode] = useState(false);
   const [nameDraft, setNameDraft] = useState(templateName);
   // Crop rect in fractional coords (0..1)
@@ -674,21 +711,78 @@ function TerminalEditorModal({
     return { fx, fy };
   };
 
+  const snapTerminalAxis = (
+    point: { fx: number; fy: number },
+    excludeId?: string | null,
+    disableSnap = false
+  ) => {
+    if (disableSnap) {
+      setSnapGuide(null);
+      return point;
+    }
+
+    const el = imgWrapRef.current;
+    if (!el) return point;
+
+    const SNAP_PX = 10;
+    const fxTol = SNAP_PX / Math.max(1, el.clientWidth);
+    const fyTol = SNAP_PX / Math.max(1, el.clientHeight);
+
+    let bestX: { v: number; d: number } | null = null;
+    let bestY: { v: number; d: number } | null = null;
+
+    for (const t of terminals) {
+      if (excludeId && t.id === excludeId) continue;
+
+      const dx = Math.abs(t.fx - point.fx);
+      if (dx <= fxTol && (!bestX || dx < bestX.d)) {
+        bestX = { v: t.fx, d: dx };
+      }
+
+      const dy = Math.abs(t.fy - point.fy);
+      if (dy <= fyTol && (!bestY || dy < bestY.d)) {
+        bestY = { v: t.fy, d: dy };
+      }
+    }
+
+    const snapped = {
+      fx: bestX ? bestX.v : point.fx,
+      fy: bestY ? bestY.v : point.fy,
+    };
+
+    if (bestX || bestY) {
+      setSnapGuide({ fx: bestX?.v, fy: bestY?.v });
+    } else {
+      setSnapGuide(null);
+    }
+
+    return snapped;
+  };
+
   // Pointer drag for existing terminals
   const onTerminalPointerDown = (id: string, e: React.PointerEvent) => {
     e.stopPropagation();
     e.preventDefault();
     draggingRef.current = id;
+    dragStartRef.current = { x: e.clientX, y: e.clientY };
+    suppressNextWrapClickRef.current = false;
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
   const onWrapPointerMove = (e: React.PointerEvent) => {
     if (!draggingRef.current) return;
+    if (dragStartRef.current) {
+      const moved = Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
+      if (moved > 3) suppressNextWrapClickRef.current = true;
+    }
     const p = fracFromEvent(e.clientX, e.clientY);
     if (!p) return;
-    onUpdate(draggingRef.current, { fx: p.fx, fy: p.fy });
+    const snapped = snapTerminalAxis(p, draggingRef.current, e.altKey);
+    onUpdate(draggingRef.current, { fx: snapped.fx, fy: snapped.fy });
   };
   const onWrapPointerUp = () => {
     draggingRef.current = null;
+    dragStartRef.current = null;
+    setSnapGuide(null);
   };
 
   const commitPending = () => {
@@ -728,7 +822,7 @@ function TerminalEditorModal({
                 placeholder="ชื่ออุปกรณ์"
               />
               <span className="text-xs text-zinc-500">
-                {cropMode ? "ลากบนรูปเพื่อเลือกพื้นที่ครอป" : "คลิกบนรูปเพื่อเพิ่มจุด · ลากจุดเพื่อย้าย"}
+                {cropMode ? "ลากบนรูปเพื่อเลือกพื้นที่ครอป" : "คลิกบนรูปเพื่อเพิ่มจุด · ลากจุดเพื่อย้าย · Snap อัตโนมัติ (กด ⌥ ค้างเพื่อไม่ Snap)"}
               </span>
             </div>
           </div>
@@ -791,12 +885,20 @@ function TerminalEditorModal({
                 }
                 onWrapPointerUp();
               }}
+              onPointerLeave={() => {
+                if (!draggingRef.current) setSnapGuide(null);
+              }}
               onClick={(e) => {
                 if (cropMode) return;
                 if (draggingRef.current) return;
+                if (suppressNextWrapClickRef.current) {
+                  suppressNextWrapClickRef.current = false;
+                  return;
+                }
                 const p = fracFromEvent(e.clientX, e.clientY);
                 if (!p) return;
-                setPendingTerminal({ fx: p.fx, fy: p.fy, id: uid() });
+                const snapped = snapTerminalAxis(p, null, e.altKey);
+                setPendingTerminal({ fx: snapped.fx, fy: snapped.fy, id: uid() });
                 setPendingLabel("");
               }}
             >
@@ -816,6 +918,9 @@ function TerminalEditorModal({
                 >
                   <div
                     onPointerDown={(e) => onTerminalPointerDown(t.id, e)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                    }}
                     className="h-5 w-5 cursor-grab rounded-full border-2 border-red-500 bg-white shadow active:cursor-grabbing"
                     title="ลากเพื่อย้าย"
                   />
@@ -837,6 +942,20 @@ function TerminalEditorModal({
                 >
                   <div className="h-5 w-5 animate-pulse rounded-full border-2 border-blue-500 bg-white shadow" />
                 </div>
+              )}
+
+              {/* Snap guides */}
+              {!cropMode && snapGuide?.fx !== undefined && (
+                <div
+                  className="pointer-events-none absolute inset-y-0 border-l border-dashed border-blue-500/70"
+                  style={{ left: `${snapGuide.fx * 100}%` }}
+                />
+              )}
+              {!cropMode && snapGuide?.fy !== undefined && (
+                <div
+                  className="pointer-events-none absolute inset-x-0 border-t border-dashed border-blue-500/70"
+                  style={{ top: `${snapGuide.fy * 100}%` }}
+                />
               )}
 
               {/* Crop overlay */}

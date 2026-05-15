@@ -41,6 +41,7 @@ export async function POST(req: NextRequest) {
         templates: body.templates ?? [],
         devices: body.devices ?? [],
         wires: body.wires ?? [],
+        labels: body.labels ?? [],
         categories: body.categories ?? [],
         wireColor: body.wireColor ?? "#dc2626",
         wireThickness: body.wireThickness ?? 2,

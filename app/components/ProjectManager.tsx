@@ -58,6 +58,7 @@ export function ProjectManager({ open, onClose }: Props) {
         name,
         devices: [],
         wires: [],
+        labels: [],
         wireColor: "#dc2626",
         wireThickness: 2,
         wireJumps: false,
@@ -80,6 +81,7 @@ export function ProjectManager({ open, onClose }: Props) {
       // templates & categories are global — do NOT overwrite them
       if (data?.devices?.length) store.setField("devices", data.devices);
       if (data?.wires?.length) store.setField("wires", data.wires);
+      if (Array.isArray(data?.labels)) store.setField("labels", data.labels);
       if (data?.wireColor) store.setWireColor(data.wireColor);
       if (typeof data?.wireThickness === "number") store.setWireThickness(data.wireThickness);
       if (typeof data?.wireJumps === "boolean") store.setWireJumps(data.wireJumps);
