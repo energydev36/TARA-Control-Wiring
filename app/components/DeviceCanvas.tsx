@@ -11,6 +11,8 @@ import {
   Circle,
   Transformer,
   Group,
+  Label as KLabel,
+  Tag,
   Path as KPath,
 } from "react-konva";
 import type Konva from "konva";
@@ -23,6 +25,14 @@ import {
   type Wire,
 } from "@/lib/store";
 import {
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
   Map as MapIcon,
   Minus,
   Plus,
@@ -372,7 +382,8 @@ function DeviceNode({
 }) {
   const img = useImage(device.src);
   const tool = useEditorStore((s) => s.activeTool);
-  const draggable = tool === "select";
+  const interactionMode = useEditorStore((s) => s.interactionMode);
+  const draggable = tool === "select" && interactionMode === "edit";
   return (
     <KImage
       id={device.id}
@@ -389,8 +400,13 @@ function DeviceNode({
       draggable={draggable}
       onMouseDown={onSelect}
       onTap={onSelect}
+      onDragStart={() => useEditorStore.getState().beginHistory()}
       onDragMove={(e) => onChange({ x: e.target.x(), y: e.target.y() }, e.target)}
-      onDragEnd={(e) => onChange({ x: e.target.x(), y: e.target.y() }, e.target)}
+      onDragEnd={(e) => {
+        onChange({ x: e.target.x(), y: e.target.y() }, e.target);
+        useEditorStore.getState().endHistory();
+      }}
+      onTransformStart={() => useEditorStore.getState().beginHistory()}
       onTransformEnd={(e) => {
         const node = e.target;
         const scaleX = node.scaleX();
@@ -410,6 +426,7 @@ function DeviceNode({
           flipX: nextFlipX,
           flipY: nextFlipY,
         });
+        useEditorStore.getState().endHistory();
       }}
       stroke={selected ? "#2563eb" : undefined}
       strokeWidth={selected ? 2 : 0}
@@ -425,11 +442,37 @@ function labelMetrics(label: CanvasLabel) {
   return { width, height };
 }
 
+function measureTagBox(text: string, fontSize: number, padding: number) {
+  const lines = (text || "").split(/\r?\n/);
+  let maxLineWidth = 0;
+
+  if (typeof document !== "undefined") {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.font = `${fontSize}px sans-serif`;
+      for (const line of lines) {
+        maxLineWidth = Math.max(maxLineWidth, ctx.measureText(line || " ").width);
+      }
+    }
+  }
+
+  if (maxLineWidth <= 0) {
+    const chars = Math.max(1, ...lines.map((l) => l.length));
+    maxLineWidth = chars * fontSize * 0.62;
+  }
+
+  const width = Math.max(16, maxLineWidth + padding * 2);
+  const height = Math.max(12, lines.length * fontSize * 1.2 + padding * 2);
+  return { width, height };
+}
+
 function LabelNode({
   label,
   selected,
   activeTool,
   editing,
+  canEdit,
   onSelect,
   onChange,
   onEdit,
@@ -438,12 +481,13 @@ function LabelNode({
   selected: boolean;
   activeTool: import("@/lib/store").Tool;
   editing: boolean;
+  canEdit: boolean;
   onSelect: (e: Konva.KonvaEventObject<MouseEvent | TouchEvent>) => void;
   onChange: (patch: Partial<CanvasLabel>) => void;
   onEdit: () => void;
 }) {
   const { width, height } = labelMetrics(label);
-  const draggable = activeTool === "select" && !editing;
+  const draggable = activeTool === "select" && !editing && canEdit;
 
   return (
     <Group
@@ -455,11 +499,17 @@ function LabelNode({
       onMouseDown={onSelect}
       onTap={onSelect}
       onDblClick={(e) => {
+        if (!canEdit) return;
         e.cancelBubble = true;
         onEdit();
       }}
+      onDragStart={() => useEditorStore.getState().beginHistory()}
       onDragMove={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
-      onDragEnd={(e) => onChange({ x: e.target.x(), y: e.target.y() })}
+      onDragEnd={(e) => {
+        onChange({ x: e.target.x(), y: e.target.y() });
+        useEditorStore.getState().endHistory();
+      }}
+      onTransformStart={() => useEditorStore.getState().beginHistory()}
       onTransformEnd={(e) => {
         const node = e.target;
         const scaleX = node.scaleX();
@@ -474,6 +524,7 @@ function LabelNode({
           fontSize: Math.max(6, Math.round(label.fontSize * scale)),
           rotation: node.rotation(),
         });
+        useEditorStore.getState().endHistory();
       }}
     >
       <KText
@@ -875,8 +926,16 @@ function WireNode({
   return (
     <Group
       id={wire.id}
-      onTransformEnd={(e) => onTransformCommit?.(e.target)}
-      onDragEnd={(e) => onTransformCommit?.(e.target)}
+      onTransformStart={() => useEditorStore.getState().beginHistory()}
+      onTransformEnd={(e) => {
+        onTransformCommit?.(e.target);
+        useEditorStore.getState().endHistory();
+      }}
+      onDragStart={() => useEditorStore.getState().beginHistory()}
+      onDragEnd={(e) => {
+        onTransformCommit?.(e.target);
+        useEditorStore.getState().endHistory();
+      }}
     >
       {hasJumps ? (
         <>
@@ -1204,6 +1263,7 @@ function WireSegmentHandles({
                   aBound,
                   bBound,
                 };
+                useEditorStore.getState().beginHistory();
               }}
               onDragMove={(e) => {
                 const node = e.target;
@@ -1246,7 +1306,10 @@ function WireSegmentHandles({
                 dragRef.current = null;
                 // Finalize from latest store points (avoid overwriting with stale pre-drag props)
                 const latest = useEditorStore.getState().wires.find((x) => x.id === wire.id);
-                if (!latest) return;
+                if (!latest) {
+                  useEditorStore.getState().endHistory();
+                  return;
+                }
                 onCommit(
                   normalizeDraggedWire(
                     [...latest.points],
@@ -1254,6 +1317,7 @@ function WireSegmentHandles({
                     !!latest.endBind
                   )
                 );
+                useEditorStore.getState().endHistory();
               }}
             />
 
@@ -1336,6 +1400,7 @@ function WireSegmentHandles({
                 endpoint: isStart ? "start" : "end",
               };
               onEndpointDragStateChange?.(true);
+              useEditorStore.getState().beginHistory();
             }}
             onDragMove={(e) => {
               const node = e.target;
@@ -1399,6 +1464,7 @@ function WireSegmentHandles({
               }
               endpointDragRef.current = null;
               onEndpointDragStateChange?.(false);
+              useEditorStore.getState().endHistory();
             }}
           />
         );
@@ -1531,6 +1597,7 @@ export default function DeviceCanvas() {
   const [draftVisual, setDraftVisual] = useState<number[] | null>(null);
   const [dragGuides, setDragGuides] = useState<number[][]>([]);
   const [showTerminalTargets, setShowTerminalTargets] = useState(false);
+  const [hoveredTerminalHint, setHoveredTerminalHint] = useState<{ x: number; y: number; text: string } | null>(null);
   const [pinPreviewSize, setPinPreviewSize] = useState<{ width: number; height: number } | null>(null);
   const [pinGuideRect, setPinGuideRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [showMiniMap, setShowMiniMap] = useState(false);
@@ -1551,6 +1618,7 @@ export default function DeviceCanvas() {
     templates,
     selectedIds,
     activeTool,
+    interactionMode,
     activeTemplateId,
     draftFixed,
     addDevice,
@@ -1576,6 +1644,7 @@ export default function DeviceCanvas() {
     textFontSize,
     textColor,
   } = useEditorStore();
+  const isViewOnly = interactionMode === "view";
   const prevToolRef = useRef(activeTool);
 
   // Resize observer
@@ -1613,6 +1682,22 @@ export default function DeviceCanvas() {
         clearSelected();
       }
 
+      // Undo / Redo
+      if (!inInput && (e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) {
+          useEditorStore.getState().redo();
+        } else {
+          useEditorStore.getState().undo();
+        }
+        return;
+      }
+      if (!inInput && (e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        useEditorStore.getState().redo();
+        return;
+      }
+
       if (!inInput && e.key === "Enter" && activeTool === "exportFrame") {
         e.preventDefault();
         useEditorStore.getState().setExportPreview(null);
@@ -1621,14 +1706,7 @@ export default function DeviceCanvas() {
       }
 
       if (!inInput && !e.ctrlKey && !e.metaKey) {
-        // Use e.code (physical key) so shortcuts work regardless of input language (e.g. Thai)
-        if (e.code === "KeyV") {
-          useEditorStore.getState().setTool("select");
-        } else if (e.code === "KeyW") {
-          useEditorStore.getState().setTool("wire");
-        } else if (e.code === "KeyT") {
-          useEditorStore.getState().setTool("text");
-        } else if (e.code === "Space" && !spaceHeld) {
+        if (e.code === "Space" && !spaceHeld) {
           e.preventDefault();
           spaceHeld = true;
           const before = useEditorStore.getState().activeTool;
@@ -1637,10 +1715,35 @@ export default function DeviceCanvas() {
             (onKeyUp as { _prev?: string })._prev = before;
             useEditorStore.getState().setTool("pan");
           }
+          return;
+        }
+
+        if (isViewOnly) return;
+        // Use e.code (physical key) so shortcuts work regardless of input language (e.g. Thai)
+        if (e.code === "KeyV") {
+          useEditorStore.getState().setTool("select");
+        } else if (e.code === "KeyW") {
+          useEditorStore.getState().setTool("wire");
+        } else if (e.code === "KeyT") {
+          useEditorStore.getState().setTool("text");
         }
       }
 
+      // Ctrl/Cmd+A — select all canvas objects
+      if (!inInput && (e.ctrlKey || e.metaKey) && (e.code === "KeyA")) {
+        e.preventDefault();
+        const st = useEditorStore.getState();
+        const all = [
+          ...st.devices.map((d) => d.id),
+          ...st.wires.map((w) => w.id),
+          ...st.labels.map((l) => l.id),
+        ];
+        st.setSelected(all);
+        return;
+      }
+
       if (e.key === "Delete" || e.key === "Backspace") {
+        if (isViewOnly) return;
         if (selectedIds.length === 0) return;
         const t = e.target as HTMLElement | null;
         if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
@@ -1662,11 +1765,20 @@ export default function DeviceCanvas() {
       }
     };
 
+    const onMouseUp = () => {
+      // If a drag/transform ended outside the browser window, Konva's onDragEnd
+      // may never fire — leaving _txDepth stuck at > 0. Force-close here so
+      // subsequent actions are correctly recorded in history.
+      useEditorStore.getState().flushHistory();
+    };
+
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("mouseup", onMouseUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("mouseup", onMouseUp);
     };
   }, [
     activeTool,
@@ -1679,6 +1791,7 @@ export default function DeviceCanvas() {
     removeDevice,
     removeWire,
     removeLabel,
+    isViewOnly,
   ]);
 
   // Keep a snapshot only once when entering export-frame mode for ESC cancel/restore
@@ -1703,6 +1816,7 @@ export default function DeviceCanvas() {
     }
     if (activeTool !== "wire") {
       setDraftVisual(null);
+      setHoveredTerminalHint(null);
       draftStartBindRef.current = null;
       draftStartWireBindRef.current = null;
       cancelDraftWire();
@@ -1979,6 +2093,13 @@ export default function DeviceCanvas() {
     const isStageHit = target === target.getStage();
     const w = getWorld();
 
+    if (isViewOnly) {
+      if (activeTool === "select" && isStageHit) {
+        clearSelected();
+      }
+      return;
+    }
+
     // Fallback selection path (robust for line selection)
     if (activeTool === "select" && !isStageHit) {
       const tid = (typeof (target as unknown as { id?: () => string }).id === "function")
@@ -2091,6 +2212,7 @@ export default function DeviceCanvas() {
   };
 
   const onStageMouseMove = (e: Konva.KonvaEventObject<MouseEvent>) => {
+    if (isViewOnly) return;
     const w = getWorld();
     if (activeTool === "pin" && activeTemplateId && pinPreviewSize) {
       setPinGuideRect({
@@ -2129,6 +2251,7 @@ export default function DeviceCanvas() {
   const onStageMouseUp = () => {
     setDragGuides([]);
     setShowTerminalTargets(false);
+    if (isViewOnly) return;
     if (activeTool === "select" && selBox && selStart.current) {
       // pick devices + wires intersecting the box
       if (selBox.w > 3 && selBox.h > 3) {
@@ -2187,6 +2310,7 @@ export default function DeviceCanvas() {
   };
 
   const onStageDblClick = () => {
+    if (isViewOnly) return;
     if (activeTool === "wire" && draftFixed) {
       finishDraftWire(
         draftStartBindRef.current ?? undefined,
@@ -2261,6 +2385,8 @@ export default function DeviceCanvas() {
   const cursor =
     activeTool === "pan"
       ? "grab"
+      : isViewOnly
+      ? "default"
       : activeTool === "pin"
       ? "copy"
       : activeTool === "wire"
@@ -2272,6 +2398,12 @@ export default function DeviceCanvas() {
       : activeTool === "terminal"
       ? "cell"
       : "default";
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    stage.container().style.cursor = cursor;
+  }, [cursor]);
 
   const renderedWires = useMemo(() => {
     const map = new Map<string, Wire>();
@@ -2309,10 +2441,121 @@ export default function DeviceCanvas() {
     return wires.map((w) => map.get(w.id) ?? w);
   }, [wires]);
 
+  const selectedWireTerminalTags = useMemo(() => {
+    const selected = new Set(selectedIds);
+    const tags: { key: string; x: number; y: number; text: string; dirX: number; dirY: number }[] = [];
+
+    const resolveTerminalLabel = (bind?: WireBind) => {
+      if (!bind) return null;
+      const dev = devices.find((d) => d.id === bind.deviceId);
+      if (!dev) return null;
+      const tpl = templates.find((t) => t.id === dev.templateId);
+      const term = tpl?.terminals.find((t) => t.id === bind.terminalId);
+      return term?.label?.trim() || term?.id || bind.terminalId;
+    };
+
+    for (const w of renderedWires) {
+      if (!selected.has(w.id) || w.points.length < 2) continue;
+
+      const startLabel = resolveTerminalLabel(w.startBind);
+      if (startLabel) {
+        const nx = w.points.length >= 4 ? w.points[2] : w.points[0] + 1;
+        const ny = w.points.length >= 4 ? w.points[3] : w.points[1];
+        const dx = w.points[0] - nx;
+        const dy = w.points[1] - ny;
+        const len = Math.hypot(dx, dy) || 1;
+        tags.push({
+          key: `${w.id}:start`,
+          x: w.points[0],
+          y: w.points[1],
+          text: startLabel,
+          dirX: dx / len,
+          dirY: dy / len,
+        });
+      }
+
+      const endLabel = resolveTerminalLabel(w.endBind);
+      if (endLabel) {
+        const n = w.points.length;
+        const px = n >= 4 ? w.points[n - 4] : w.points[n - 2] - 1;
+        const py = n >= 4 ? w.points[n - 3] : w.points[n - 1];
+        const dx = w.points[n - 2] - px;
+        const dy = w.points[n - 1] - py;
+        const len = Math.hypot(dx, dy) || 1;
+        tags.push({
+          key: `${w.id}:end`,
+          x: w.points[n - 2],
+          y: w.points[n - 1],
+          text: endLabel,
+          dirX: dx / len,
+          dirY: dy / len,
+        });
+      }
+    }
+
+    return tags;
+  }, [selectedIds, renderedWires, devices, templates, view.scale]);
+
+  const selectedDeviceTags = useMemo(() => {
+    const selected = new Set(selectedIds);
+    const out: {
+      key: string;
+      x: number;
+      y: number;
+      text: string;
+      kind: "name" | "terminal";
+    }[] = [];
+
+    for (const d of devices) {
+      if (!selected.has(d.id)) continue;
+      const tpl = templates.find((t) => t.id === d.templateId);
+      if (!tpl) continue;
+
+      out.push({
+        key: `${d.id}:name`,
+        x: d.x + d.width / 2,
+        y: d.y - 10 / view.scale,
+        text: tpl.name,
+        kind: "name",
+      });
+
+      for (const t of tpl.terminals) {
+        const label = t.label?.trim() || t.id;
+        if (!label) continue;
+        const p = terminalWorld(d, t.fx, t.fy);
+        out.push({
+          key: `${d.id}:term:${t.id}`,
+          x: p.x,
+          y: p.y - 12 / view.scale,
+          text: label,
+          kind: "terminal",
+        });
+      }
+    }
+
+    return out;
+  }, [selectedIds, devices, templates, view.scale]);
+
   const selectedHasWire = useMemo(
     () => selectedIds.some((id) => wires.some((w) => w.id === id)),
     [selectedIds, wires]
   );
+
+  const selectedWireNameTags = useMemo(() => {
+    const selected = new Set(selectedIds);
+    const out: { key: string; x: number; y: number; text: string }[] = [];
+    let index = 1;
+    for (const w of renderedWires) {
+      if (!selected.has(w.id) || w.points.length < 2) continue;
+      const mid = Math.floor(w.points.length / 4) * 2;
+      const x = w.points[Math.min(mid, w.points.length - 2)];
+      const y = w.points[Math.min(mid + 1, w.points.length - 1)] - 10 / view.scale;
+      const name = w.label?.trim() || `สายไฟ ${index}`;
+      out.push({ key: `${w.id}:wire-name`, x, y, text: name });
+      index += 1;
+    }
+    return out;
+  }, [selectedIds, renderedWires, view.scale]);
   const rotationSnaps = useMemo(() => Array.from({ length: 36 }, (_, i) => i * 10), []);
 
   const getImageRatio = async (src: string): Promise<number> => {
@@ -2458,6 +2701,12 @@ export default function DeviceCanvas() {
               device={d}
               selected={selectedIds.includes(d.id)}
               onSelect={(e) => {
+                if (isViewOnly) {
+                  e.cancelBubble = true;
+                  if (e.evt.shiftKey) toggleSelected(d.id);
+                  else setSelected([d.id]);
+                  return;
+                }
                 if (activeTool === "terminal") {
                   e.cancelBubble = true;
                   return;
@@ -2480,6 +2729,7 @@ export default function DeviceCanvas() {
                 else setSelected([d.id]);
               }}
               onChange={(patch, dragNode) => {
+                if (isViewOnly) return;
                 let nextPatch = patch;
                 const dragOnly =
                   typeof patch.x === "number" &&
@@ -2571,8 +2821,15 @@ export default function DeviceCanvas() {
               key={l.id}
               label={l}
               activeTool={activeTool}
+              canEdit={!isViewOnly}
               selected={selectedIds.includes(l.id)}
               onSelect={(e) => {
+                if (isViewOnly) {
+                  e.cancelBubble = true;
+                  if (e.evt.shiftKey) toggleSelected(l.id);
+                  else setSelected([l.id]);
+                  return;
+                }
                 if (activeTool === "pan") return;
                 if (activeTool !== "select") {
                   e.cancelBubble = true;
@@ -2588,6 +2845,7 @@ export default function DeviceCanvas() {
               onChange={(patch) => updateLabel(l.id, patch)}
               editing={editingLabelId === l.id}
               onEdit={() => {
+                if (isViewOnly) return;
                 setSelected([l.id]);
                 setEditingLabelId(l.id);
               }}
@@ -2628,6 +2886,12 @@ export default function DeviceCanvas() {
                   updateWire(w.id, { points: mergeCollinear(cleanWirePoints(pts)) });
                 }}
                 onSelect={(e) => {
+                  if (isViewOnly) {
+                    e.cancelBubble = true;
+                    if (e.evt.shiftKey) toggleSelected(w.id);
+                    else setSelected([w.id]);
+                    return;
+                  }
                   if (activeTool === "pan") {
                     // allow Stage draggable to pan even when clicking on a wire
                     return;
@@ -2648,6 +2912,98 @@ export default function DeviceCanvas() {
             );
           })}
 
+          {/* Terminal labels on selected wires */}
+          {selectedWireTerminalTags.map((tag) => {
+            const fontSize = 20 / view.scale;
+            const padding = 3 / view.scale;
+            const { width: textWidth, height: textHeight } = measureTagBox(tag.text, fontSize, padding);
+            const isHorizontal = Math.abs(tag.dirX) >= Math.abs(tag.dirY);
+            const push = (isHorizontal ? textWidth / 2 : textHeight / 2) + 8 / view.scale;
+            return (
+              <KLabel
+                key={tag.key}
+                x={tag.x + tag.dirX * push}
+                y={tag.y + tag.dirY * push}
+                offsetX={textWidth / 2}
+                offsetY={textHeight / 2}
+                listening={false}
+              >
+                <Tag
+                  fill="#ffffff"
+                  stroke="#000000"
+                  strokeWidth={1 / view.scale}
+                  cornerRadius={2 / view.scale}
+                />
+                <KText
+                  text={tag.text}
+                  fontSize={fontSize}
+                  fill="#000000"
+                  padding={padding}
+                />
+              </KLabel>
+            );
+          })}
+
+          {/* Wire name labels on selected wires */}
+          {selectedWireNameTags.map((tag) => {
+            const fontSize = 15 / view.scale;
+            const padding = 3 / view.scale;
+            const { width: textWidth, height: textHeight } = measureTagBox(tag.text, fontSize, padding);
+            return (
+              <KLabel
+                key={tag.key}
+                x={tag.x}
+                y={tag.y}
+                offsetX={textWidth / 2}
+                offsetY={textHeight}
+                listening={false}
+              >
+                <Tag
+                  fill="#f8fafc"
+                  stroke="#0f172a"
+                  strokeWidth={1 / view.scale}
+                  cornerRadius={2 / view.scale}
+                />
+                <KText
+                  text={tag.text}
+                  fontSize={fontSize}
+                  fill="#0f172a"
+                  padding={padding}
+                />
+              </KLabel>
+            );
+          })}
+
+          {/* Device name + terminal labels on selected objects */}
+          {selectedDeviceTags.map((tag) => {
+            const fontSize = tag.kind === "name" ? 18 / view.scale : 14 / view.scale;
+            const padding = tag.kind === "name" ? 4 / view.scale : 3 / view.scale;
+            const { width: textWidth, height: textHeight } = measureTagBox(tag.text, fontSize, padding);
+            return (
+              <KLabel
+                key={tag.key}
+                x={tag.x}
+                y={tag.y}
+                offsetX={textWidth / 2}
+                offsetY={tag.kind === "name" ? 0 : textHeight / 2}
+                listening={false}
+              >
+                <Tag
+                  fill="#ffffff"
+                  stroke="#000000"
+                  strokeWidth={1 / view.scale}
+                  cornerRadius={2 / view.scale}
+                />
+                <KText
+                  text={tag.text}
+                  fontSize={fontSize}
+                  fill="#000000"
+                  padding={padding}
+                />
+              </KLabel>
+            );
+          })}
+
           {/* Terminals overlay on top (wire mode or endpoint dragging) */}
           {(activeTool === "wire" || showTerminalTargets) && devices.flatMap((d) => {
             const tpl = templates.find((t) => t.id === d.templateId);
@@ -2655,6 +3011,8 @@ export default function DeviceCanvas() {
               const p = terminalWorld(d, t.fx, t.fy);
               const r = 6 / view.scale;
               const interactive = activeTool === "wire";
+              const terminalName = t.label?.trim() || t.id;
+              const hintText = `${tpl?.name ?? "Device"} • ${terminalName}`;
               return [
                 <Circle
                   key={`${d.id}:${t.id}:dot`}
@@ -2669,15 +3027,24 @@ export default function DeviceCanvas() {
                     if (!interactive) return;
                     const stage = e.target.getStage();
                     if (stage) stage.container().style.cursor = "pointer";
+                    setHoveredTerminalHint({
+                      x: p.x,
+                      y: p.y,
+                      text: hintText,
+                    });
                   }}
                   onMouseLeave={(e) => {
                     if (!interactive) return;
                     const stage = e.target.getStage();
                     if (stage) stage.container().style.cursor = cursor;
+                    setHoveredTerminalHint((prev) =>
+                      prev && prev.text === hintText ? null : prev
+                    );
                   }}
                   onMouseDown={(e) => {
                     if (!interactive) return;
                     e.cancelBubble = true;
+                    setHoveredTerminalHint({ x: p.x, y: p.y, text: hintText });
                     if (!draftFixed) {
                       draftStartBindRef.current = { deviceId: d.id, terminalId: t.id };
                       startDraftWire(p.x, p.y);
@@ -2697,6 +3064,34 @@ export default function DeviceCanvas() {
               ];
             });
           })}
+
+          {activeTool === "wire" && hoveredTerminalHint && (() => {
+            const fontSize = 14 / view.scale;
+            const padding = 3 / view.scale;
+            const { width: textWidth, height: textHeight } = measureTagBox(hoveredTerminalHint.text, fontSize, padding);
+            return (
+              <KLabel
+                x={hoveredTerminalHint.x}
+                y={hoveredTerminalHint.y - 10 / view.scale}
+                offsetX={textWidth / 2}
+                offsetY={textHeight}
+                listening={false}
+              >
+                <Tag
+                  fill="#ffffff"
+                  stroke="#dc2626"
+                  strokeWidth={1 / view.scale}
+                  cornerRadius={2 / view.scale}
+                />
+                <KText
+                  text={hoveredTerminalHint.text}
+                  fontSize={fontSize}
+                  fill="#111827"
+                  padding={padding}
+                />
+              </KLabel>
+            );
+          })()}
 
           {/* T-junction & endpoint dots */}
           {(() => {
@@ -2734,7 +3129,7 @@ export default function DeviceCanvas() {
           })()}
 
           {/* Wire waypoint handles (only when selected + select tool) */}
-          {activeTool === "select" &&
+          {!isViewOnly && activeTool === "select" &&
             renderedWires
               .filter((w) => selectedIds.includes(w.id))
               .map((w) => (
@@ -2839,7 +3234,7 @@ export default function DeviceCanvas() {
             />
           )}
 
-          <Transformer
+          {!isViewOnly && <Transformer
             ref={transformerRef}
             rotateEnabled={!selectedHasWire}
             rotationSnaps={rotationSnaps}
@@ -2909,7 +3304,7 @@ export default function DeviceCanvas() {
             anchorSize={8}
             borderStroke="#2563eb"
             anchorStroke="#2563eb"
-          />
+          />}
         </Layer>
 
         {/* Export preview / frame bounding box */}
@@ -3220,24 +3615,26 @@ export default function DeviceCanvas() {
       </Stage>
 
       {/* Alignment toolbar for multi-selected devices */}
-      <AlignmentToolbar
-        devices={devices.filter((d) => selectedIds.includes(d.id))}
-        onApply={(updates) => {
-          const { updateWire, templates: tpls } = useEditorStore.getState();
-          const prevById = new Map(useEditorStore.getState().devices.map((d) => [d.id, d] as const));
-          updates.forEach(({ id, patch }) => {
-            updateDevice(id, patch);
-          });
-          const latestDevices = useEditorStore.getState().devices;
-          updates.forEach(({ id }) => {
-            const d = latestDevices.find((x) => x.id === id);
-            if (d) recalcBoundWires(d.id, d, prevById.get(id) ?? null, tpls, useEditorStore.getState().wires, updateWire);
-          });
-        }}
-      />
+      {!isViewOnly && (
+        <AlignmentToolbar
+          devices={devices.filter((d) => selectedIds.includes(d.id))}
+          onApply={(updates) => {
+            const { updateWire, templates: tpls } = useEditorStore.getState();
+            const prevById = new Map(useEditorStore.getState().devices.map((d) => [d.id, d] as const));
+            updates.forEach(({ id, patch }) => {
+              updateDevice(id, patch);
+            });
+            const latestDevices = useEditorStore.getState().devices;
+            updates.forEach(({ id }) => {
+              const d = latestDevices.find((x) => x.id === id);
+              if (d) recalcBoundWires(d.id, d, prevById.get(id) ?? null, tpls, useEditorStore.getState().wires, updateWire);
+            });
+          }}
+        />
+      )}
 
       {/* Floating transform controls */}
-      {activeTool === "select" && transformControlsPos && !selectedHasWire && (
+      {!isViewOnly && activeTool === "select" && transformControlsPos && !selectedHasWire && (
         <div
           className="absolute z-30 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-md border border-blue-300 bg-blue-500/90 p-1 shadow-md backdrop-blur-sm dark:border-blue-400 dark:bg-blue-600/90"
           style={{ left: transformControlsPos.x, top: transformControlsPos.y }}
@@ -3290,15 +3687,16 @@ export default function DeviceCanvas() {
 
       {/* Hint overlay */}
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-black/60 px-3 py-1.5 text-xs text-white">
-        {activeTool === "wire" && "คลิกพื้นที่ว่าง = เพิ่มจุดหัก · คลิก Terminal = จบสาย · Double-click = จบลอย · Shift = สลับแนว · ESC ยกเลิก"}
-        {activeTool === "pin" && "คลิกบน Canvas เพื่อวางอุปกรณ์"}
-        {activeTool === "text" && "คลิกบน Canvas เพื่อเพิ่ม Label · เลือกแล้วลากเพื่อย้าย · ดับเบิลคลิกเพื่อแก้ข้อความ"}
-        {activeTool === "terminal" &&
+        {isViewOnly && "โหมดดูอย่างเดียว: คลิกอุปกรณ์/สายไฟเพื่อดูรายละเอียด แต่แก้ไขไม่ได้"}
+        {!isViewOnly && activeTool === "wire" && "คลิกพื้นที่ว่าง = เพิ่มจุดหัก · คลิก Terminal = จบสาย · Double-click = จบลอย · Shift = สลับแนว · ESC ยกเลิก"}
+        {!isViewOnly && activeTool === "pin" && "คลิกบน Canvas เพื่อวางอุปกรณ์"}
+        {!isViewOnly && activeTool === "text" && "คลิกบน Canvas เพื่อเพิ่ม Label · เลือกแล้วลากเพื่อย้าย · ดับเบิลคลิกเพื่อแก้ข้อความ"}
+        {!isViewOnly && activeTool === "terminal" &&
           "คลิกบนอุปกรณ์เพื่อเพิ่มจุดต่อสาย · คลิกจุดเดิมเพื่อลบ"}
-        {activeTool === "select" &&
+        {!isViewOnly && activeTool === "select" &&
           "ลากเพื่อเลือกหลายชิ้น · Shift+คลิก เพิ่ม/ลบ · Del ลบ · ลากเส้นเพื่อย้าย · Shift+คลิกมุม = ลบมุม"}
-        {activeTool === "pan" && "ลากเพื่อเลื่อน Canvas"}
-        {activeTool === "exportFrame" && "ลากกรอบเพื่อย้าย · ลากขอบ/มุมเพื่อปรับขนาดกรอบส่งออก · ใช้เคอร์เซอร์เมาส์ช่วยชี้จุด · Enter ยืนยัน · Esc ยกเลิก"}
+        {!isViewOnly && activeTool === "pan" && "ลากเพื่อเลื่อน Canvas"}
+        {!isViewOnly && activeTool === "exportFrame" && "ลากกรอบเพื่อย้าย · ลากขอบ/มุมเพื่อปรับขนาดกรอบส่งออก · ใช้เคอร์เซอร์เมาส์ช่วยชี้จุด · Enter ยืนยัน · Esc ยกเลิก"}
       </div>
 
       {/* Bottom-right navigation controls */}
@@ -3448,92 +3846,6 @@ export default function DeviceCanvas() {
 
 type AlignUpdate = { id: string; patch: Partial<Device> };
 
-function AlignLeftIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="4" y="3" width="8" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="4" y="6.8" width="5.5" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="4" y="10.6" width="7" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function AlignCenterHIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M8 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="4" y="3" width="8" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="5.3" y="6.8" width="5.4" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="4.5" y="10.6" width="7" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function AlignRightIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M14 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="4" y="3" width="8" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="6.5" y="6.8" width="5.5" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="5" y="10.6" width="7" height="2.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function AlignTopIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 2H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="3" y="4" width="2.4" height="8" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="6.8" y="4" width="2.4" height="5.5" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="10.6" y="4" width="2.4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function AlignCenterVIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 8H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="3" y="4" width="2.4" height="8" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="6.8" y="5.3" width="2.4" height="5.4" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="10.6" y="4.5" width="2.4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function AlignBottomIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 14H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="3" y="4" width="2.4" height="8" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="6.8" y="6.5" width="2.4" height="5.5" rx="1" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="10.6" y="5" width="2.4" height="7" rx="1" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function DistributeHIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 2V14M14 2V14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="4.2" y="4" width="2.4" height="8" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="9.4" y="5.2" width="2.4" height="5.6" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
-function DistributeVIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="M2 2H14M2 14H14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <rect x="4" y="4.2" width="8" height="2.4" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
-      <rect x="5.2" y="9.4" width="5.6" height="2.4" rx="0.9" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
-}
-
 function AlignmentToolbar({
   devices,
   onApply,
@@ -3602,18 +3914,18 @@ function AlignmentToolbar({
   return (
     <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2 rounded-lg border border-zinc-200 bg-white px-1.5 py-1 shadow-md dark:border-zinc-700 dark:bg-zinc-900">
       <div className="flex items-center gap-0.5 text-zinc-700 dark:text-zinc-200">
-        <button onClick={alignLeft} className={btn} title="ชิดซ้าย"><AlignLeftIcon /></button>
-        <button onClick={alignCenterH} className={btn} title="จัดกึ่งกลางแนวนอน"><AlignCenterHIcon /></button>
-        <button onClick={alignRight} className={btn} title="ชิดขวา"><AlignRightIcon /></button>
+        <button onClick={alignLeft} className={btn} title="ชิดซ้าย"><AlignStartVertical size={14} /></button>
+        <button onClick={alignCenterH} className={btn} title="จัดกึ่งกลางแนวนอน"><AlignCenterVertical size={14} /></button>
+        <button onClick={alignRight} className={btn} title="ชิดขวา"><AlignEndVertical size={14} /></button>
         <span className="mx-1 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
-        <button onClick={alignTop} className={btn} title="ชิดบน"><AlignTopIcon /></button>
-        <button onClick={alignCenterV} className={btn} title="จัดกึ่งกลางแนวตั้ง"><AlignCenterVIcon /></button>
-        <button onClick={alignBottom} className={btn} title="ชิดล่าง"><AlignBottomIcon /></button>
+        <button onClick={alignTop} className={btn} title="ชิดบน"><AlignStartHorizontal size={14} /></button>
+        <button onClick={alignCenterV} className={btn} title="จัดกึ่งกลางแนวตั้ง"><AlignCenterHorizontal size={14} /></button>
+        <button onClick={alignBottom} className={btn} title="ชิดล่าง"><AlignEndHorizontal size={14} /></button>
         {devices.length >= 3 && (
           <>
             <span className="mx-1 h-5 w-px bg-zinc-300 dark:bg-zinc-700" />
-            <button onClick={distributeH} className={btn} title="เฉลี่ยแนวนอน"><DistributeHIcon /></button>
-            <button onClick={distributeV} className={btn} title="เฉลี่ยแนวตั้ง"><DistributeVIcon /></button>
+            <button onClick={distributeH} className={btn} title="เฉลี่ยแนวนอน"><AlignHorizontalDistributeCenter size={14} /></button>
+            <button onClick={distributeV} className={btn} title="เฉลี่ยแนวตั้ง"><AlignVerticalDistributeCenter size={14} /></button>
           </>
         )}
       </div>

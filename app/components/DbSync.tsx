@@ -126,6 +126,7 @@ export function DbSync() {
         wt: s.wireThickness,
         wj: s.wireJumps,
         pid: s.currentProjectId,
+        pn: s.currentProjectName,
       });
 
     const unsub = useEditorStore.subscribe((state) => {

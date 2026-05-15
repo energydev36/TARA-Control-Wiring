@@ -56,6 +56,37 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    await connectDB();
+    const body = await req.json();
+    const projectId = String(body?.projectId ?? "").trim();
+    const name = String(body?.name ?? "").trim();
+
+    if (!projectId) {
+      return NextResponse.json({ error: "Missing projectId" }, { status: 400 });
+    }
+    if (!name) {
+      return NextResponse.json({ error: "Missing name" }, { status: 400 });
+    }
+
+    const doc = await ProjectModel.findOneAndUpdate(
+      { projectId },
+      { name },
+      { new: true }
+    );
+
+    if (!doc) {
+      return NextResponse.json({ error: "Project not found" }, { status: 404 });
+    }
+
+    return NextResponse.json({ ok: true, updatedAt: doc.updatedAt });
+  } catch (err) {
+    console.error("PATCH /api/project error:", err);
+    return NextResponse.json({ error: String(err) }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     await connectDB();

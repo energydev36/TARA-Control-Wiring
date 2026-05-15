@@ -103,13 +103,22 @@ export function ProjectManager({ open, onClose }: Props) {
   };
 
   const handleRename = async (projectId: string, newProjectName: string) => {
-    if (!newProjectName.trim()) return;
+    const trimmedName = newProjectName.trim();
+    if (!trimmedName) return;
+
+    const res = await fetch("/api/project", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ projectId, name: trimmedName }),
+    });
+    if (!res.ok) return;
+
     // If it's the current project, update store too
     if (projectId === currentProjectId) {
-      useEditorStore.getState().setCurrentProject(projectId, newProjectName.trim());
+      useEditorStore.getState().setCurrentProject(projectId, trimmedName);
     }
     setProjects((prev) =>
-      prev.map((p) => (p.projectId === projectId ? { ...p, name: newProjectName.trim() } : p))
+      prev.map((p) => (p.projectId === projectId ? { ...p, name: trimmedName } : p))
     );
   };
 

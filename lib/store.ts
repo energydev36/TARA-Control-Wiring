@@ -30,6 +30,7 @@ function mergeCollinearStore(pts: number[]): number[] {
 }
 
 export type Tool = "select" | "pin" | "wire" | "text" | "pan" | "terminal" | "exportFrame";
+export type InteractionMode = "edit" | "view";
 
 export type Terminal = {
   id: string;
@@ -88,6 +89,29 @@ export type CanvasLabel = {
   rotation?: number;
 };
 
+/** Snapshot of canvas content used by undo/redo */
+type HistorySnapshot = {
+  devices: Device[];
+  wires: Wire[];
+  labels: CanvasLabel[];
+};
+
+/** Max number of undo steps kept in memory */
+const HISTORY_LIMIT = 50;
+/** Continuous updates (e.g. while dragging) within this window collapse into a single history entry */
+const HISTORY_COALESCE_MS = 500;
+
+/** Module-scoped coalescing state for update-style mutations */
+let _lastCoalesceAt = 0;
+let _lastCoalesceKey = "";
+/**
+ * Depth of the active history "transaction". While > 0 the auto-snapshot helpers
+ * become no-ops — the caller is expected to have already pushed exactly one
+ * snapshot via `beginHistory()` before mutating state. Used to batch drag /
+ * transform operations into a single undo entry.
+ */
+let _txDepth = 0;
+
 type State = {
   templates: DeviceTemplate[];
   devices: Device[];
@@ -95,7 +119,12 @@ type State = {
   labels: CanvasLabel[];
   categories: string[];
 
+  /** Undo/redo history (canvas content only) */
+  past: HistorySnapshot[];
+  future: HistorySnapshot[];
+
   activeTool: Tool;
+  interactionMode: InteractionMode;
   activeTemplateId: string | null;
   selectedIds: string[];
 
@@ -143,6 +172,7 @@ type State = {
 
   // Tool / selection
   setTool: (t: Tool) => void;
+  setInteractionMode: (mode: InteractionMode) => void;
   setWireColor: (c: string) => void;
   setWireThickness: (n: number) => void;
   wireJumps: boolean;
@@ -167,23 +197,70 @@ type State = {
   setSelected: (ids: string[]) => void;
   toggleSelected: (id: string) => void;
   clearSelected: () => void;
+
+  // Undo / Redo
+  pushHistory: () => void;
+  /** Begin a batched history transaction (pushes one snapshot, suppresses auto-snapshots until endHistory). */
+  beginHistory: () => void;
+  /** Close a transaction opened by beginHistory. Calls must be balanced. */
+  endHistory: () => void;
+  /**
+   * Force-close any open transaction without clearing history.
+   * Call on window mouseup to recover from cases where onDragEnd never fires
+   * (e.g. mouse released outside the browser window).
+   */
+  flushHistory: () => void;
+  undo: () => void;
+  redo: () => void;
+  resetHistory: () => void;
 };
 
-const uid = () =>
+export const uid = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : Math.random().toString(36).slice(2);
 
 export const useEditorStore = create<State>()(
   persist(
-    (set, get) => ({
+    (set, get) => {
+      /** Capture current canvas content into the past stack (clears redo future). */
+      const snapshot = (): void => {
+        if (_txDepth > 0) return; // already captured at transaction begin
+        const s = get();
+        const snap: HistorySnapshot = {
+          devices: s.devices,
+          wires: s.wires,
+          labels: s.labels,
+        };
+        const past = s.past.length >= HISTORY_LIMIT
+          ? [...s.past.slice(s.past.length - HISTORY_LIMIT + 1), snap]
+          : [...s.past, snap];
+        set({ past, future: [] });
+      };
+
+      /** Coalesced snapshot for high-frequency updates (drag/transform). */
+      const snapshotCoalesced = (key: string): void => {
+        if (_txDepth > 0) return; // a drag/transform owns the snapshot
+        const now = Date.now();
+        if (now - _lastCoalesceAt > HISTORY_COALESCE_MS || _lastCoalesceKey !== key) {
+          snapshot();
+        }
+        _lastCoalesceAt = now;
+        _lastCoalesceKey = key;
+      };
+
+      return ({
   templates: [],
   devices: [],
   wires: [],
   labels: [],
   categories: [],
 
+  past: [],
+  future: [],
+
   activeTool: "select",
+  interactionMode: "edit",
   activeTemplateId: null,
   selectedIds: [],
 
@@ -249,16 +326,48 @@ export const useEditorStore = create<State>()(
       ),
     })),
 
-  addDevice: (d) => set((s) => ({ devices: [...s.devices, d] })),
-  updateDevice: (id, patch) =>
+  addDevice: (d) => {
+    snapshot();
+    set((s) => ({ devices: [...s.devices, d] }));
+  },
+  updateDevice: (id, patch) => {
+    snapshotCoalesced(`device:${id}`);
     set((s) => ({
       devices: s.devices.map((d) => (d.id === id ? { ...d, ...patch } : d)),
-    })),
-  removeDevice: (id) =>
-    set((s) => ({
-      devices: s.devices.filter((d) => d.id !== id),
-      selectedIds: s.selectedIds.filter((sid) => sid !== id),
-    })),
+    }));
+  },
+  removeDevice: (id) => {
+    snapshot();
+    set((s) => {
+      const wireIdsToRemove = new Set(
+        s.wires
+          .filter((w) => w.startBind?.deviceId === id || w.endBind?.deviceId === id)
+          .map((w) => w.id)
+      );
+
+      // Also remove wires that are tapped onto removed wires (recursive cascade)
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const w of s.wires) {
+          if (wireIdsToRemove.has(w.id)) continue;
+          const linkedToRemovedWire =
+            (w.startWireBind && wireIdsToRemove.has(w.startWireBind.wireId)) ||
+            (w.endWireBind && wireIdsToRemove.has(w.endWireBind.wireId));
+          if (linkedToRemovedWire) {
+            wireIdsToRemove.add(w.id);
+            changed = true;
+          }
+        }
+      }
+
+      return {
+        devices: s.devices.filter((d) => d.id !== id),
+        wires: s.wires.filter((w) => !wireIdsToRemove.has(w.id)),
+        selectedIds: s.selectedIds.filter((sid) => sid !== id && !wireIdsToRemove.has(sid)),
+      };
+    });
+  },
 
   startDraftWire: (x, y) => set({ draftFixed: [x, y] }),
   appendDraftPoints: (pts) =>
@@ -278,29 +387,41 @@ export const useEditorStore = create<State>()(
       endBind,
       vFirst,
     };
+    snapshot();
     set((s) => ({ wires: [...s.wires, wire], draftFixed: null }));
   },
   cancelDraftWire: () => set({ draftFixed: null }),
-  updateWire: (id, patch) =>
+  updateWire: (id, patch) => {
+    snapshotCoalesced(`wire:${id}`);
     set((s) => ({
       wires: s.wires.map((w) => (w.id === id ? { ...w, ...patch } : w)),
-    })),
-  removeWire: (id) =>
+    }));
+  },
+  removeWire: (id) => {
+    snapshot();
     set((s) => ({
       wires: s.wires.filter((w) => w.id !== id),
       selectedIds: s.selectedIds.filter((sid) => sid !== id),
-    })),
+    }));
+  },
 
-  addLabel: (l) => set((s) => ({ labels: [...s.labels, l] })),
-  updateLabel: (id, patch) =>
+  addLabel: (l) => {
+    snapshot();
+    set((s) => ({ labels: [...s.labels, l] }));
+  },
+  updateLabel: (id, patch) => {
+    snapshotCoalesced(`label:${id}`);
     set((s) => ({
       labels: s.labels.map((l) => (l.id === id ? { ...l, ...patch } : l)),
-    })),
-  removeLabel: (id) =>
+    }));
+  },
+  removeLabel: (id) => {
+    snapshot();
     set((s) => ({
       labels: s.labels.filter((l) => l.id !== id),
       selectedIds: s.selectedIds.filter((sid) => sid !== id),
-    })),
+    }));
+  },
 
   setTool: (t) =>
     set({
@@ -308,6 +429,13 @@ export const useEditorStore = create<State>()(
       activeTemplateId: t === "pin" ? get().activeTemplateId : null,
       draftFixed: t === "wire" ? get().draftFixed : null,
     }),
+  setInteractionMode: (mode) =>
+    set((s) => ({
+      interactionMode: mode,
+      activeTool: mode === "view" ? "select" : s.activeTool,
+      activeTemplateId: mode === "view" ? null : s.activeTemplateId,
+      draftFixed: mode === "view" ? null : s.draftFixed,
+    })),
   setWireColor: (c) => set({ wireColor: c }),
   setWireThickness: (n) => set({ wireThickness: n }),
   textFontSize: 18,
@@ -320,13 +448,25 @@ export const useEditorStore = create<State>()(
   setExportPreview: (v) => set({ exportPreview: v }),
   exportFrame: null,
   setExportFrame: (v) => set({ exportFrame: v }),
-  setField: (key, value) => set({ [key]: value } as Partial<State>),
+  setField: (key, value) => {
+    set({ [key]: value } as Partial<State>);
+    if (key === "devices" || key === "wires" || key === "labels") {
+      _lastCoalesceAt = 0;
+      _lastCoalesceKey = "";
+      set({ past: [], future: [] });
+    }
+  },
   dbStatus: "idle",
   setDbStatus: (s) => set({ dbStatus: s }),
   currentProjectId: "default",
   currentProjectName: "Untitled",
-  setCurrentProject: (id, name) => set({ currentProjectId: id, currentProjectName: name }),
-  clearCanvas: () =>
+  setCurrentProject: (id, name) => {
+    _lastCoalesceAt = 0;
+    _lastCoalesceKey = "";
+    set({ currentProjectId: id, currentProjectName: name, past: [], future: [] });
+  },
+  clearCanvas: () => {
+    snapshot();
     set({
       devices: [],
       wires: [],
@@ -334,7 +474,8 @@ export const useEditorStore = create<State>()(
       selectedIds: [],
       activeTemplateId: null,
       draftFixed: null,
-    }),
+    });
+  },
   setSelected: (ids) => set({ selectedIds: ids }),
   toggleSelected: (id) =>
     set((s) => ({
@@ -343,7 +484,85 @@ export const useEditorStore = create<State>()(
         : [...s.selectedIds, id],
     })),
   clearSelected: () => set({ selectedIds: [] }),
-    }),
+
+  pushHistory: () => snapshot(),
+  beginHistory: () => {
+    if (_txDepth === 0) {
+      // Take exactly one snapshot at the boundary of the transaction.
+      // Bypass coalescing so the entry isn't merged with a stale prior burst.
+      _lastCoalesceAt = 0;
+      _lastCoalesceKey = "";
+      snapshot();
+    }
+    _txDepth++;
+  },
+  endHistory: () => {
+    if (_txDepth > 0) _txDepth--;
+    if (_txDepth === 0) {
+      // Reset coalesce so the next discrete edit always pushes.
+      _lastCoalesceAt = 0;
+      _lastCoalesceKey = "";
+    }
+  },
+  flushHistory: () => {
+    if (_txDepth > 0) {
+      _txDepth = 0;
+      _lastCoalesceAt = 0;
+      _lastCoalesceKey = "";
+    }
+  },
+  resetHistory: () => {
+    _lastCoalesceAt = 0;
+    _lastCoalesceKey = "";
+    _txDepth = 0;
+    set({ past: [], future: [] });
+  },
+  undo: () => {
+    const s = get();
+    if (s.past.length === 0) return;
+    const prev = s.past[s.past.length - 1];
+    const current: HistorySnapshot = {
+      devices: s.devices,
+      wires: s.wires,
+      labels: s.labels,
+    };
+    _lastCoalesceAt = 0;
+    _lastCoalesceKey = "";
+    _txDepth = 0;
+    set({
+      past: s.past.slice(0, -1),
+      future: [...s.future, current],
+      devices: prev.devices,
+      wires: prev.wires,
+      labels: prev.labels,
+      selectedIds: [],
+      draftFixed: null,
+    });
+  },
+  redo: () => {
+    const s = get();
+    if (s.future.length === 0) return;
+    const next = s.future[s.future.length - 1];
+    const current: HistorySnapshot = {
+      devices: s.devices,
+      wires: s.wires,
+      labels: s.labels,
+    };
+    _lastCoalesceAt = 0;
+    _lastCoalesceKey = "";
+    _txDepth = 0;
+    set({
+      future: s.future.slice(0, -1),
+      past: [...s.past, current],
+      devices: next.devices,
+      wires: next.wires,
+      labels: next.labels,
+      selectedIds: [],
+      draftFixed: null,
+    });
+  },
+    });
+    },
     {
       name: "tara-editor-v1",
       partialize: (s) => ({
@@ -361,5 +580,3 @@ export const useEditorStore = create<State>()(
     }
   )
 );
-
-export { uid };

@@ -18,6 +18,9 @@ import {
   ChevronRight,
   FolderOpen,
   Type,
+  Eye,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 
 const tools: { id: Tool; label: string; icon: React.ReactNode }[] = [
@@ -58,6 +61,8 @@ export default function Sidebar() {
     addTemplate,
     removeTemplate,
     activeTool,
+    interactionMode,
+    setInteractionMode,
     setTool,
     activeTemplateId,
     setActiveTemplate,
@@ -92,7 +97,13 @@ export default function Sidebar() {
     setExportPreview,
   } = useEditorStore();
 
+  const pastLen = useEditorStore((s) => s.past.length);
+  const futureLen = useEditorStore((s) => s.future.length);
+  const undo = useEditorStore((s) => s.undo);
+  const redo = useEditorStore((s) => s.redo);
+
   const handleToolClick = (tool: Tool) => {
+    if (interactionMode === "view" && tool !== "select") return;
     setTool(tool);
     if (tool === "exportFrame") {
       const ids = [...devices.map((d) => d.id), ...wires.map((w) => w.id), ...labels.map((l) => l.id)];
@@ -166,16 +177,73 @@ export default function Sidebar() {
         <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">
           Tools
         </h2>
+        <div className="mb-2 grid grid-cols-2 gap-1">
+          <button
+            onClick={() => undo()}
+            disabled={pastLen === 0 || interactionMode === "view"}
+            title={`เลิกทำ (Ctrl/Cmd+Z)  •  ${pastLen}/50`}
+            className="flex items-center justify-center gap-1 rounded-md border border-zinc-200 px-2 py-1.5 text-xs transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-800 dark:hover:bg-zinc-900"
+          >
+            <Undo2 size={13} />
+            เลิกทำ
+            {pastLen > 0 && (
+              <span className="ml-0.5 rounded bg-zinc-200 px-1 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                {pastLen}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => redo()}
+            disabled={futureLen === 0 || interactionMode === "view"}
+            title={`ทำซ้ำ (Ctrl/Cmd+Shift+Z)  •  ${futureLen}`}
+            className="flex items-center justify-center gap-1 rounded-md border border-zinc-200 px-2 py-1.5 text-xs transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-800 dark:hover:bg-zinc-900"
+          >
+            <Redo2 size={13} />
+            ทำซ้ำ
+            {futureLen > 0 && (
+              <span className="ml-0.5 rounded bg-zinc-200 px-1 text-[10px] text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                {futureLen}
+              </span>
+            )}
+          </button>
+        </div>
+        <div className="mb-2 grid grid-cols-2 gap-1">
+          <button
+            onClick={() => setInteractionMode("edit")}
+            className={`flex items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+              interactionMode === "edit"
+                ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950"
+                : "border-zinc-200 hover:bg-zinc-100 dark:border-zinc-800 dark:hover:bg-zinc-900"
+            }`}
+            title="โหมดแก้ไข"
+          >
+            <Pencil size={13} />
+            แก้ไข
+          </button>
+          <button
+            onClick={() => setInteractionMode("view")}
+            className={`flex items-center justify-center gap-1 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+              interactionMode === "view"
+                ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950"
+                : "border-zinc-200 hover:bg-zinc-100 dark:border-zinc-800 dark:hover:bg-zinc-900"
+            }`}
+            title="โหมดดูอย่างเดียว"
+          >
+            <Eye size={13} />
+            ดูอย่างเดียว
+          </button>
+        </div>
         <div className="grid grid-cols-5 gap-1">
           {tools.map((t) => (
             <button
               key={t.id}
               onClick={() => handleToolClick(t.id)}
+              disabled={interactionMode === "view" && t.id !== "select"}
               className={`flex flex-col items-center justify-center rounded-md border px-1 py-2 text-xs transition-colors ${
                 activeTool === t.id
                   ? "border-blue-500 bg-blue-50 text-blue-700 dark:bg-blue-950"
                   : "border-zinc-200 hover:bg-zinc-100 dark:border-zinc-800 dark:hover:bg-zinc-900"
-              }`}
+              } ${(interactionMode === "view" && t.id !== "select") ? "cursor-not-allowed opacity-40" : ""}`}
               title={t.label}
             >
               <span className="flex items-center justify-center">{t.icon}</span>
@@ -186,7 +254,7 @@ export default function Sidebar() {
       </section>
 
       {/* Wire settings */}
-      {activeTool === "wire" && (
+      {interactionMode === "edit" && activeTool === "wire" && (
         <section className="border-b border-zinc-200 p-3 dark:border-zinc-800">
           <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">
             Wire
@@ -244,7 +312,7 @@ export default function Sidebar() {
       )}
 
       {/* Selected wire properties */}
-      {(() => {
+      {interactionMode === "edit" && (() => {
         const selectedWires = wires.filter((w) => selectedIds.includes(w.id));
         if (selectedWires.length === 0) return null;
         const firstWire = selectedWires[0];
@@ -298,7 +366,7 @@ export default function Sidebar() {
       })()}
 
       {/* Text tool settings */}
-      {activeTool === "text" && (
+      {interactionMode === "edit" && activeTool === "text" && (
         <section className="border-b border-zinc-200 p-3 dark:border-zinc-800">
           <h2 className="mb-2 text-xs font-medium uppercase text-zinc-500">Text</h2>
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -337,7 +405,7 @@ export default function Sidebar() {
       )}
 
       {/* Selected label properties */}
-      {(() => {
+      {interactionMode === "edit" && (() => {
         const selectedLabels = labels.filter((l) => selectedIds.includes(l.id));
         if (selectedLabels.length === 0) return null;
         const first = selectedLabels[0];
@@ -591,7 +659,7 @@ export default function Sidebar() {
             <DbStatusBadge />
             <button
               onClick={deleteSelected}
-              disabled={selectedIds.length === 0}
+              disabled={selectedIds.length === 0 || interactionMode === "view"}
               className="rounded-md border border-zinc-200 px-2 py-1 hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-800 dark:hover:bg-zinc-900"
             >
               Delete
@@ -696,22 +764,43 @@ function TemplateCard({
 function TerminalRow({
   index,
   terminal,
+  isFocused,
+  inputRef,
+  onRowClick,
+  onEnter,
   onLabelChange,
   onDelete,
 }: {
   index: number;
   terminal: Terminal;
+  isFocused?: boolean;
+  inputRef?: (el: HTMLInputElement | null) => void;
+  onRowClick?: () => void;
+  onEnter?: () => void;
   onLabelChange: (v: string) => void;
   onDelete: () => void;
 }) {
   return (
-    <div className="flex items-center gap-1.5 py-0.5">
+    <div
+      onClick={onRowClick}
+      className={`flex items-center gap-1.5 rounded px-1 py-0.5 transition-colors ${
+        isFocused ? "bg-blue-50 dark:bg-blue-950/40" : "hover:bg-zinc-100 dark:hover:bg-zinc-800/60"
+      }`}
+    >
       <span className="w-4 text-right text-[10px] text-zinc-400">{index}.</span>
       <div className="h-3 w-3 shrink-0 rounded-full border-2 border-red-500 bg-white" />
       <input
+        ref={inputRef}
         type="text"
         value={terminal.label}
         onChange={(e) => onLabelChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            onEnter?.();
+            (e.currentTarget as HTMLInputElement).blur();
+          }
+        }}
         className="min-w-0 flex-1 rounded border border-zinc-300 px-1.5 py-0.5 text-xs dark:border-zinc-700 dark:bg-zinc-900"
         placeholder="Label..."
       />
@@ -758,20 +847,78 @@ function TerminalEditorModal({
   onRename: (name: string) => void;
   onClose: () => void;
 }) {
+  const stageScrollRef = useRef<HTMLDivElement>(null);
   const imgWrapRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const draggingRef = useRef<string | null>(null);
   const dragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const panStartRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const suppressNextWrapClickRef = useRef(false);
   const [snapGuide, setSnapGuide] = useState<{ fx?: number; fy?: number } | null>(null);
   const [cropMode, setCropMode] = useState(false);
+  const [connectPointTool, setConnectPointTool] = useState(false);
   const [nameDraft, setNameDraft] = useState(templateName);
+  const [imageZoom, setImageZoom] = useState(1);
+  const [baseImageSize, setBaseImageSize] = useState<{ width: number; height: number } | null>(null);
+  const [focusedTerminalId, setFocusedTerminalId] = useState<string | null>(null);
+  const terminalInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   // Crop rect in fractional coords (0..1)
   const [cropRect, setCropRect] = useState<{ fx: number; fy: number; fw: number; fh: number } | null>(null);
   const cropDragRef = useRef<{ startFx: number; startFy: number } | null>(null);
+  const cropResizeRef = useRef<{
+    handle: "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw";
+    startFx: number;
+    startFy: number;
+    rect: { fx: number; fy: number; fw: number; fh: number };
+  } | null>(null);
 
   useEffect(() => {
     setNameDraft(templateName);
   }, [templateName]);
+
+  useEffect(() => {
+    if (!focusedTerminalId) return;
+    const input = terminalInputRefs.current[focusedTerminalId];
+    if (!input) return;
+    input.focus();
+    input.select();
+    input.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [focusedTerminalId]);
+
+  useEffect(() => {
+    if (!focusedTerminalId) return;
+    if (!terminals.some((t) => t.id === focusedTerminalId)) {
+      setFocusedTerminalId(null);
+    }
+  }, [focusedTerminalId, terminals]);
+
+  useEffect(() => {
+    setImageZoom(1);
+    setBaseImageSize(null);
+  }, [templateSrc]);
+
+  const clampZoom = (v: number) => Math.max(0.5, Math.min(4, v));
+
+  const captureBaseImageSize = () => {
+    const img = imgRef.current;
+    if (!img) return;
+    const width = img.clientWidth;
+    const height = img.clientHeight;
+    if (width > 0 && height > 0) {
+      setBaseImageSize({ width, height });
+    }
+  };
+
+  useEffect(() => {
+    if (imageZoom !== 1) return;
+    const t = window.setTimeout(captureBaseImageSize, 0);
+    const onResize = () => captureBaseImageSize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.clearTimeout(t);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [imageZoom, templateSrc]);
 
   const commitName = () => {
     const v = nameDraft.trim();
@@ -805,6 +952,30 @@ function TerminalEditorModal({
     const fx = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
     const fy = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
     return { fx, fy };
+  };
+
+  const ensureDefaultCropRect = () => {
+    setCropRect((prev) => prev ?? { fx: 0.1, fy: 0.1, fw: 0.8, fh: 0.8 });
+  };
+
+  const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
+  const startCropResize = (
+    handle: "move" | "n" | "s" | "e" | "w" | "ne" | "nw" | "se" | "sw",
+    e: React.PointerEvent
+  ) => {
+    if (!cropRect) return;
+    const p = fracFromEvent(e.clientX, e.clientY);
+    if (!p) return;
+    cropResizeRef.current = {
+      handle,
+      startFx: p.fx,
+      startFy: p.fy,
+      rect: { ...cropRect },
+    };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+    e.preventDefault();
+    e.stopPropagation();
   };
 
   const snapTerminalAxis = (
@@ -857,6 +1028,7 @@ function TerminalEditorModal({
 
   // Pointer drag for existing terminals
   const onTerminalPointerDown = (id: string, e: React.PointerEvent) => {
+    setFocusedTerminalId(id);
     e.stopPropagation();
     e.preventDefault();
     draggingRef.current = id;
@@ -865,6 +1037,16 @@ function TerminalEditorModal({
     (e.target as Element).setPointerCapture?.(e.pointerId);
   };
   const onWrapPointerMove = (e: React.PointerEvent) => {
+    if (panStartRef.current) {
+      const sc = stageScrollRef.current;
+      if (!sc) return;
+      const dx = e.clientX - panStartRef.current.x;
+      const dy = e.clientY - panStartRef.current.y;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) suppressNextWrapClickRef.current = true;
+      sc.scrollLeft = panStartRef.current.left - dx;
+      sc.scrollTop = panStartRef.current.top - dy;
+      return;
+    }
     if (!draggingRef.current) return;
     if (dragStartRef.current) {
       const moved = Math.hypot(e.clientX - dragStartRef.current.x, e.clientY - dragStartRef.current.y);
@@ -876,6 +1058,7 @@ function TerminalEditorModal({
     onUpdate(draggingRef.current, { fx: snapped.fx, fy: snapped.fy });
   };
   const onWrapPointerUp = () => {
+    panStartRef.current = null;
     draggingRef.current = null;
     dragStartRef.current = null;
     setSnapGuide(null);
@@ -895,12 +1078,12 @@ function TerminalEditorModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[90vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl dark:bg-zinc-900">
+      <div className="flex h-[100dvh] w-[100vw] flex-col overflow-hidden bg-white shadow-2xl dark:bg-zinc-900">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
           <div>
@@ -918,15 +1101,57 @@ function TerminalEditorModal({
                 placeholder="ชื่ออุปกรณ์"
               />
               <span className="text-xs text-zinc-500">
-                {cropMode ? "ลากบนรูปเพื่อเลือกพื้นที่ครอป" : "คลิกบนรูปเพื่อเพิ่มจุด · ลากจุดเพื่อย้าย · Snap อัตโนมัติ (กด ⌥ ค้างเพื่อไม่ Snap)"}
+                {cropMode
+                  ? "ลากบนรูปเพื่อเลือกพื้นที่ครอป"
+                  : connectPointTool
+                  ? "โหมดเชื่อมจุด: คลิกบนรูปเพื่อเพิ่มจุด · ลากจุดเพื่อย้าย · Snap อัตโนมัติ (กด ⌥ ค้างเพื่อไม่ Snap)"
+                  : "โหมดเลื่อนดู: ลากรูปเพื่อเลื่อนตำแหน่ง · กด 'เชื่อมจุด' เพื่อเริ่มวางจุด"}
               </span>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <button
+              onClick={() => setConnectPointTool((v) => !v)}
+              className={`rounded px-3 py-1 text-xs ${
+                connectPointTool
+                  ? "bg-blue-600 text-white hover:bg-blue-700"
+                  : "bg-zinc-200 text-zinc-700 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-200"
+              }`}
+              title="เปิด/ปิดโหมดเชื่อมจุด"
+            >
+              เชื่อมจุด
+            </button>
+            <div className="flex items-center overflow-hidden rounded border border-zinc-300 dark:border-zinc-700">
+              <button
+                onClick={() => setImageZoom((z) => clampZoom(z - 0.1))}
+                className="px-2 py-1 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                title="Zoom Out"
+              >
+                −
+              </button>
+              <button
+                onClick={() => setImageZoom(1)}
+                className="border-x border-zinc-300 px-2 py-1 text-[11px] tabular-nums text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                title="รีเซ็ตซูม"
+              >
+                {Math.round(imageZoom * 100)}%
+              </button>
+              <button
+                onClick={() => setImageZoom((z) => clampZoom(z + 0.1))}
+                className="px-2 py-1 text-xs hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                title="Zoom In"
+              >
+                +
+              </button>
+            </div>
+            <button
               onClick={() => {
-                setCropMode((m) => !m);
-                setCropRect(null);
+                setCropMode((m) => {
+                  const next = !m;
+                  if (next) ensureDefaultCropRect();
+                  else setCropRect(null);
+                  return next;
+                });
               }}
               className={`rounded px-3 py-1 text-xs ${
                 cropMode
@@ -949,11 +1174,57 @@ function TerminalEditorModal({
         {/* Body: image + sidebar list */}
         <div className="flex min-h-0 flex-1 gap-3 p-3">
           {/* Image stage */}
-          <div className="flex min-h-0 flex-1 items-center justify-center rounded bg-zinc-100 p-2 dark:bg-zinc-950">
+          <div ref={stageScrollRef} className="flex min-h-0 flex-1 items-start justify-start overflow-auto rounded bg-zinc-100 p-2 dark:bg-zinc-950">
             <div
               ref={imgWrapRef}
-              className={`relative inline-block select-none ${cropMode ? "cursor-crosshair" : "cursor-crosshair"}`}
+              className={`relative inline-block select-none ${cropMode || connectPointTool ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"}`}
+              onWheel={(e) => {
+                e.preventDefault();
+                const step = e.deltaY > 0 ? -0.1 : 0.1;
+                setImageZoom((z) => clampZoom(z + step));
+              }}
               onPointerMove={(e) => {
+                if (cropMode && cropResizeRef.current) {
+                  const p = fracFromEvent(e.clientX, e.clientY);
+                  if (!p) return;
+                  const { handle, startFx, startFy, rect } = cropResizeRef.current;
+                  const minSize = 0.05;
+                  const dx = p.fx - startFx;
+                  const dy = p.fy - startFy;
+                  const right0 = rect.fx + rect.fw;
+                  const bottom0 = rect.fy + rect.fh;
+
+                  let left = rect.fx;
+                  let top = rect.fy;
+                  let right = right0;
+                  let bottom = bottom0;
+
+                  if (handle === "move") {
+                    const nx = clamp01(rect.fx + dx);
+                    const ny = clamp01(rect.fy + dy);
+                    left = Math.min(nx, 1 - rect.fw);
+                    top = Math.min(ny, 1 - rect.fh);
+                    right = left + rect.fw;
+                    bottom = top + rect.fh;
+                  } else {
+                    if (handle.includes("w")) left = Math.max(0, Math.min(rect.fx + dx, right0 - minSize));
+                    if (handle.includes("e")) right = Math.min(1, Math.max(right0 + dx, left + minSize));
+                    if (handle.includes("n")) top = Math.max(0, Math.min(rect.fy + dy, bottom0 - minSize));
+                    if (handle.includes("s")) bottom = Math.min(1, Math.max(bottom0 + dy, top + minSize));
+                    if (handle === "n") right = right0;
+                    if (handle === "s") right = right0;
+                    if (handle === "w") bottom = bottom0;
+                    if (handle === "e") bottom = bottom0;
+                  }
+
+                  setCropRect({
+                    fx: left,
+                    fy: top,
+                    fw: Math.max(minSize, right - left),
+                    fh: Math.max(minSize, bottom - top),
+                  });
+                  return;
+                }
                 if (cropMode && cropDragRef.current) {
                   const p = fracFromEvent(e.clientX, e.clientY);
                   if (!p) return;
@@ -968,14 +1239,24 @@ function TerminalEditorModal({
                 onWrapPointerMove(e);
               }}
               onPointerDown={(e) => {
+                if (!cropMode && !connectPointTool && !draggingRef.current) {
+                  const sc = stageScrollRef.current;
+                  if (!sc) return;
+                  panStartRef.current = {
+                    x: e.clientX,
+                    y: e.clientY,
+                    left: sc.scrollLeft,
+                    top: sc.scrollTop,
+                  };
+                  suppressNextWrapClickRef.current = false;
+                  (e.target as Element).setPointerCapture?.(e.pointerId);
+                  return;
+                }
                 if (!cropMode) return;
-                const p = fracFromEvent(e.clientX, e.clientY);
-                if (!p) return;
-                cropDragRef.current = { startFx: p.fx, startFy: p.fy };
-                setCropRect({ fx: p.fx, fy: p.fy, fw: 0, fh: 0 });
               }}
               onPointerUp={(e) => {
                 if (cropMode) {
+                  cropResizeRef.current = null;
                   cropDragRef.current = null;
                   return;
                 }
@@ -986,6 +1267,12 @@ function TerminalEditorModal({
               }}
               onClick={(e) => {
                 if (cropMode) return;
+                const target = e.target as EventTarget | null;
+                const clickedBlankArea = target === e.currentTarget || target === imgRef.current;
+                if (clickedBlankArea) {
+                  setFocusedTerminalId(null);
+                }
+                if (!connectPointTool) return;
                 if (draggingRef.current) return;
                 if (suppressNextWrapClickRef.current) {
                   suppressNextWrapClickRef.current = false;
@@ -1000,10 +1287,22 @@ function TerminalEditorModal({
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
+                ref={imgRef}
                 src={templateSrc}
                 alt={templateName}
                 draggable={false}
-                className="block max-h-[70vh] max-w-full object-contain"
+                onLoad={captureBaseImageSize}
+                className={baseImageSize ? "block" : "block max-h-[70vh] max-w-full object-contain"}
+                style={
+                  baseImageSize
+                    ? {
+                        width: `${baseImageSize.width * imageZoom}px`,
+                        height: `${baseImageSize.height * imageZoom}px`,
+                        maxWidth: "none",
+                        maxHeight: "none",
+                      }
+                    : undefined
+                }
               />
               {/* Existing terminals (draggable) */}
               {terminals.map((t) => (
@@ -1016,8 +1315,13 @@ function TerminalEditorModal({
                     onPointerDown={(e) => onTerminalPointerDown(t.id, e)}
                     onClick={(e) => {
                       e.stopPropagation();
+                      setFocusedTerminalId(t.id);
                     }}
-                    className="h-5 w-5 cursor-grab rounded-full border-2 border-red-500 bg-white shadow active:cursor-grabbing"
+                    className={`h-5 w-5 cursor-grab rounded-full border-2 bg-white shadow active:cursor-grabbing ${
+                      focusedTerminalId === t.id
+                        ? "border-blue-600 ring-2 ring-blue-300"
+                        : "border-red-500"
+                    }`}
                     title="ลากเพื่อย้าย"
                   />
                   {t.label && (
@@ -1080,13 +1384,34 @@ function TerminalEditorModal({
                       height: `${cropRect.fh * 100}%`,
                     }}
                   />
+                  {/* Crop drag / resize handles */}
+                  <div
+                    className="absolute"
+                    style={{
+                      left: `${cropRect.fx * 100}%`,
+                      top: `${cropRect.fy * 100}%`,
+                      width: `${cropRect.fw * 100}%`,
+                      height: `${cropRect.fh * 100}%`,
+                    }}
+                    onPointerDown={(e) => startCropResize("move", e)}
+                  >
+                    <div className="absolute inset-0 cursor-move" />
+                    <div className="absolute left-0 top-0 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-nwse-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("nw", e)} />
+                    <div className="absolute left-1/2 top-0 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-ns-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("n", e)} />
+                    <div className="absolute right-0 top-0 h-3 w-3 translate-x-1/2 -translate-y-1/2 cursor-nesw-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("ne", e)} />
+                    <div className="absolute right-0 top-1/2 h-3 w-3 translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("e", e)} />
+                    <div className="absolute right-0 bottom-0 h-3 w-3 translate-x-1/2 translate-y-1/2 cursor-nwse-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("se", e)} />
+                    <div className="absolute bottom-0 left-1/2 h-3 w-3 -translate-x-1/2 translate-y-1/2 cursor-ns-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("s", e)} />
+                    <div className="absolute bottom-0 left-0 h-3 w-3 -translate-x-1/2 translate-y-1/2 cursor-nesw-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("sw", e)} />
+                    <div className="absolute left-0 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-full border border-orange-500 bg-white" onPointerDown={(e) => startCropResize("w", e)} />
+                  </div>
                 </>
               )}
             </div>
           </div>
 
           {/* Side panel: list + input */}
-          <div className="flex w-64 shrink-0 flex-col gap-2 overflow-hidden">
+          <div className="flex w-72 shrink-0 flex-col gap-2 overflow-hidden">
             {pendingTerminal && (
               <div className="rounded border border-blue-400 bg-blue-50 p-2 dark:bg-blue-950/40">
                 <p className="mb-1 text-[11px] text-blue-700 dark:text-blue-300">
@@ -1185,6 +1510,12 @@ function TerminalEditorModal({
                   key={t.id}
                   index={i + 1}
                   terminal={t}
+                  isFocused={focusedTerminalId === t.id}
+                  inputRef={(el) => {
+                    terminalInputRefs.current[t.id] = el;
+                  }}
+                  onRowClick={() => setFocusedTerminalId(t.id)}
+                  onEnter={() => setFocusedTerminalId(null)}
                   onLabelChange={(v) => onUpdate(t.id, { label: v })}
                   onDelete={() => onRemove(t.id)}
                 />
