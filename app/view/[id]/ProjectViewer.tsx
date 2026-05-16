@@ -287,6 +287,9 @@ export default function ProjectViewer({
   // Lazy-load device images: only set image href when device is near viewport.
   const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({});
   const deviceRefs = useRef<Map<string, Element | null>>(new Map());
+  const [imageFailed, setImageFailed] = useState<Record<string, boolean>>({});
+  const imageAttempts = useRef<Record<string, number>>({});
+  const [imageKeys, setImageKeys] = useState<Record<string, number>>({});
 
   useEffect(() => {
     const root = containerRef.current || null;
@@ -732,26 +735,46 @@ export default function ProjectViewer({
                 ref={(el) => { deviceRefs.current.set(d.id, el); }}
               >
                 {loadedImages[d.id] ? (
-                  d.src ? (
-                    <image
-                      href={d.src}
-                      x={0}
-                      y={0}
-                      width={d.width}
-                      height={d.height}
-                      preserveAspectRatio="none"
-                      pointerEvents="none"
-                    />
-                  ) : (
-                    <rect
-                      x={0}
-                      y={0}
-                      width={d.width}
-                      height={d.height}
-                      fill="#e4e4e7"
-                      pointerEvents="none"
-                    />
-                  )
+                  (() => {
+                    const src = d.src || templateMap.get(d.templateId)?.src;
+                    if (!src || imageFailed[d.id]) {
+                      return (
+                        <rect
+                          x={0}
+                          y={0}
+                          width={d.width}
+                          height={d.height}
+                          fill="#e4e4e7"
+                          pointerEvents="none"
+                        />
+                      );
+                    }
+                    return (
+                      <image
+                        key={imageKeys[d.id] ?? 0}
+                        href={src}
+                        x={0}
+                        y={0}
+                        width={d.width}
+                        height={d.height}
+                        preserveAspectRatio="none"
+                        pointerEvents="none"
+                        onLoad={() => {
+                          // mark loaded (no-op if already true)
+                        }}
+                        onError={() => {
+                          const a = imageAttempts.current[d.id] ?? 0;
+                          imageAttempts.current[d.id] = a + 1;
+                          if (a < 2) {
+                            // retry by bumping key to remount image element
+                            setTimeout(() => setImageKeys((prev) => ({ ...prev, [d.id]: (prev[d.id] ?? 0) + 1 })), 800);
+                          } else {
+                            setImageFailed((prev) => ({ ...prev, [d.id]: true }));
+                          }
+                        }}
+                      />
+                    );
+                  })()
                 ) : (
                   // Placeholder until image is near viewport
                   <rect

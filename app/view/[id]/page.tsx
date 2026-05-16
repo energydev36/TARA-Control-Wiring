@@ -58,11 +58,12 @@ function normalizeDevices(input: unknown): ViewerDevice[] {
     .map((item) => {
       if (!item || typeof item !== "object") return null;
       const d = item as Record<string, unknown>;
-      if (typeof d.id !== "string" || typeof d.src !== "string") return null;
+      if (typeof d.id !== "string") return null;
       return {
         id: d.id,
         templateId: typeof d.templateId === "string" ? d.templateId : "",
-        src: d.src,
+        // src can be omitted on server-side to avoid sending full image URLs for every device.
+        src: typeof d.src === "string" ? d.src : "",
         x: toFiniteNumber(d.x, 0),
         y: toFiniteNumber(d.y, 0),
         width: Math.max(1, toFiniteNumber(d.width, 120)),
@@ -72,7 +73,9 @@ function normalizeDevices(input: unknown): ViewerDevice[] {
         flipY: Boolean(d.flipY),
       } satisfies ViewerDevice;
     })
-    .filter((d): d is NonNullable<typeof d> => d !== null);
+    .filter((d): d is NonNullable<typeof d> => d !== null)
+    // Slice to a reasonable cap to avoid very large payloads for huge projects.
+    .slice(0, 400);
 }
 
 function normalizeWires(input: unknown): ViewerWire[] {
@@ -114,7 +117,9 @@ function normalizeWires(input: unknown): ViewerWire[] {
         endWireBind: normWireBind(w.endWireBind),
       } satisfies ViewerWire;
     })
-    .filter((w): w is NonNullable<typeof w> => w !== null);
+    .filter((w): w is NonNullable<typeof w> => w !== null)
+    // Cap wires returned to limit payload
+    .slice(0, 200);
 }
 
 function normalizeLabels(input: unknown): ViewerLabel[] {
