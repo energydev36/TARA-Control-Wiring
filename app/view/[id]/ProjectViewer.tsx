@@ -284,6 +284,46 @@ export default function ProjectViewer({
     });
   }, [bounds, container]);
 
+  // Lazy-load device images: only set image href when device is near viewport.
+  const [loadedImages, setLoadedImages] = useState<Record<string, boolean>>({});
+  const deviceRefs = useRef<Map<string, Element | null>>(new Map());
+
+  useEffect(() => {
+    const root = containerRef.current || null;
+    if (!root) return;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        const toLoad: string[] = [];
+        for (const ent of entries) {
+          const id = (ent.target as Element).getAttribute("data-device-id");
+          if (!id) continue;
+          if (ent.isIntersecting || ent.intersectionRatio > 0) toLoad.push(id);
+        }
+        if (toLoad.length) {
+          setLoadedImages((prev) => {
+            const next = { ...prev };
+            for (const id of toLoad) next[id] = true;
+            return next;
+          });
+          for (const id of toLoad) {
+            const el = deviceRefs.current.get(id);
+            if (el) obs.unobserve(el);
+          }
+        }
+      },
+      { root: null, rootMargin: "400px", threshold: 0.01 }
+    );
+
+    // observe current refs
+    for (const [id, el] of deviceRefs.current.entries()) {
+      if (!el) continue;
+      if (loadedImages[id]) continue;
+      try { obs.observe(el); } catch {}
+    }
+
+    return () => obs.disconnect();
+  }, [containerRef, loadedImages]);
+
   // ---------------- Pointer / touch gestures ----------------
   const pointers = useRef<Map<number, { x: number; y: number }>>(new Map());
   const gestureRef = useRef<{
@@ -688,24 +728,38 @@ export default function ProjectViewer({
                 key={d.id}
                 transform={deviceTransform(d)}
                 style={{ cursor: "pointer" }}
+                data-device-id={d.id}
+                ref={(el) => { deviceRefs.current.set(d.id, el); }}
               >
-                {d.src ? (
-                  <image
-                    href={d.src}
-                    x={0}
-                    y={0}
-                    width={d.width}
-                    height={d.height}
-                    preserveAspectRatio="none"
-                    pointerEvents="none"
-                  />
+                {loadedImages[d.id] ? (
+                  d.src ? (
+                    <image
+                      href={d.src}
+                      x={0}
+                      y={0}
+                      width={d.width}
+                      height={d.height}
+                      preserveAspectRatio="none"
+                      pointerEvents="none"
+                    />
+                  ) : (
+                    <rect
+                      x={0}
+                      y={0}
+                      width={d.width}
+                      height={d.height}
+                      fill="#e4e4e7"
+                      pointerEvents="none"
+                    />
+                  )
                 ) : (
+                  // Placeholder until image is near viewport
                   <rect
                     x={0}
                     y={0}
                     width={d.width}
                     height={d.height}
-                    fill="#e4e4e7"
+                    fill="#f3f4f6"
                     pointerEvents="none"
                   />
                 )}

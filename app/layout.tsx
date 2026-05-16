@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { DbSync } from "./components/DbSync";
+import SelectiveDbSync from "./components/SelectiveDbSync";
 
 export const viewport: Viewport = {
   width: "device-width",
@@ -51,7 +51,7 @@ export default function RootLayout({
         <meta name="theme-color" content="#ffffff" />
       </head>
       <body className="min-h-full flex flex-col">
-        <DbSync />
+        <SelectiveDbSync />
         {children}
       </body>
     </html>
